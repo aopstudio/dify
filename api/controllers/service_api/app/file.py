@@ -12,7 +12,7 @@ from controllers.common.errors import (
 from controllers.service_api import api
 from controllers.service_api.wraps import FetchUserArg, WhereisUserArg, validate_app_token
 from fields.file_fields import file_fields
-from models.model import App, EndUser
+from models import App, EndUser, db
 from services.file_service import FileService
 
 
@@ -35,7 +35,7 @@ class FileApi(Resource):
             raise FilenameNotExistsError
 
         try:
-            upload_file = FileService.upload_file(
+            upload_file = FileService(db.engine).upload_file(
                 filename=file.filename,
                 content=file.read(),
                 mimetype=file.mimetype,

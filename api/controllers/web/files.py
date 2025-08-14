@@ -11,6 +11,7 @@ from controllers.common.errors import (
 )
 from controllers.web.wraps import WebApiResource
 from fields.file_fields import file_fields
+from models import db
 from services.file_service import FileService
 
 
@@ -32,7 +33,7 @@ class FileApi(WebApiResource):
             source = None
 
         try:
-            upload_file = FileService.upload_file(
+            upload_file = FileService(db.engine).upload_file(
                 filename=file.filename,
                 content=file.read(),
                 mimetype=file.mimetype,
