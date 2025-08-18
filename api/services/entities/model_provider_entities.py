@@ -10,9 +10,9 @@ from core.entities.model_entities import (
 )
 from core.entities.provider_entities import (
     CredentialConfiguration,
+    CustomModelConfiguration,
     ProviderQuotaType,
     QuotaConfiguration,
-    CustomModelConfiguration,
 )
 from core.model_runtime.entities.common_entities import I18nObject
 from core.model_runtime.entities.model_entities import ModelType

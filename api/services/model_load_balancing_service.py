@@ -402,7 +402,7 @@ class ModelLoadBalancingService:
                 self._clear_credentials_cache(tenant_id, config_id)
             else:
                 # create load balancing config
-                if name == "__inherit__" or name == "__delete__":
+                if name in {"__inherit__", "__delete__"}:
                     raise ValueError("Invalid load balancing config name")
 
                 if credential_id:

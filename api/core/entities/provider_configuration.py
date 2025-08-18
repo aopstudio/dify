@@ -7,7 +7,7 @@ from json import JSONDecodeError
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from constants import HIDDEN_VALUE
@@ -453,7 +453,8 @@ class ProviderConfiguration(BaseModel):
 
         :param credential_id: credential id
         :param credential_record: the encrypted_config and credential_name
-        :param credential_source: the credential comes from the provider_credential(`provider`) or the provider_model_credential(`custom_model`)
+        :param credential_source: the credential comes from the provider_credential(`provider`) 
+            or the provider_model_credential(`custom_model`)
         :param session: the database session
         :return:
         """

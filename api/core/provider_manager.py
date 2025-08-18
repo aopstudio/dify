@@ -11,12 +11,12 @@ from configs import dify_config
 from core.entities.model_entities import DefaultModelEntity, DefaultModelProviderEntity
 from core.entities.provider_configuration import ProviderConfiguration, ProviderConfigurations, ProviderModelBundle
 from core.entities.provider_entities import (
+    CredentialConfiguration,
     CustomConfiguration,
     CustomModelConfiguration,
     CustomProviderConfiguration,
     ModelLoadBalancingConfiguration,
     ModelSettings,
-    CredentialConfiguration,
     ProviderQuotaType,
     QuotaConfiguration,
     QuotaUnit,

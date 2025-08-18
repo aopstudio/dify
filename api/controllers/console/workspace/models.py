@@ -9,8 +9,8 @@ from controllers.console.wraps import account_initialization_required, setup_req
 from core.model_runtime.entities.model_entities import ModelType
 from core.model_runtime.errors.validate import CredentialsValidateFailedError
 from core.model_runtime.utils.encoders import jsonable_encoder
-from libs.login import login_required
 from libs.helper import StrLen, uuid_value
+from libs.login import login_required
 from services.model_load_balancing_service import ModelLoadBalancingService
 from services.model_provider_service import ModelProviderService
 
