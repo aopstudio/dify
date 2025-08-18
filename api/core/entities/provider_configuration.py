@@ -7,6 +7,8 @@ from json import JSONDecodeError
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select, func
+from sqlalchemy.orm import Session
 
 from constants import HIDDEN_VALUE
 from core.entities.model_entities import ModelStatus, ModelWithProviderEntity, SimpleModelProviderEntity
@@ -47,7 +49,16 @@ original_provider_configurate_methods: dict[str, list[ConfigurateMethod]] = {}
 
 class ProviderConfiguration(BaseModel):
     """
-    Model class for provider configuration.
+    Provider configuration entity for managing model provider settings.
+
+    This class handles:
+    - Provider credentials CRUD and switch
+    - Custom Model credentials CRUD and switch
+    - System vs custom provider switching
+    - Load balancing configurations
+    - Model enablement/disablement
+
+    TODO: lots of logic in a BaseModel entity should be separated, the exceptions should be classified
     """
 
     tenant_id: str
@@ -165,54 +176,98 @@ class ProviderConfiguration(BaseModel):
         has_model_configurations = len(self.custom_configuration.models) > 0
         return has_provider_credentials or has_model_configurations
 
-    def get_custom_credential(self, credential_id: str | None = None) -> dict | None:
+    def _get_provider_record(self, session: Session) -> Provider | None:
         """
-        Get custom credentials.
+        Get custom provider record.
+        """
+        # get provider
+        model_provider_id = ModelProviderID(self.provider.provider)
+        provider_names = [self.provider.provider]
+        if model_provider_id.is_langgenius():
+            provider_names.append(model_provider_id.provider_name)
+
+        stmt = select(Provider).where(
+            Provider.tenant_id == self.tenant_id,
+            Provider.provider_type == ProviderType.CUSTOM.value,
+            Provider.provider_name.in_(provider_names),
+        )
+
+        return session.execute(stmt).scalar_one_or_none()
+
+    def _get_specific_provider_credential(self, credential_id: str) -> dict | None:
+        """
+        Get a specific provider credential by ID.
+        :param credential_id: Credential ID
+        :return:
+        """
+        # Extract secret variables from provider credential schema
+        credential_secret_variables = self.extract_secret_variables(
+            self.provider.provider_credential_schema.credential_form_schemas
+            if self.provider.provider_credential_schema
+            else []
+        )
+
+        with Session(db.engine) as session:
+            # Prefer the actual provider record name if exists (to handle aliased provider names)
+            provider_record = self._get_provider_record(session)
+            provider_name = provider_record.provider_name if provider_record else self.provider.provider
+
+            stmt = select(ProviderCredential).where(
+                ProviderCredential.id == credential_id,
+                ProviderCredential.tenant_id == self.tenant_id,
+                ProviderCredential.provider_name == provider_name,
+            )
+
+            credential = session.execute(stmt).scalar_one_or_none()
+
+        if not credential or not credential.encrypted_config:
+            raise ValueError(f"Credential with id {credential_id} not found.")
+
+        try:
+            credentials = json.loads(credential.encrypted_config)
+        except JSONDecodeError:
+            credentials = {}
+
+        # Decrypt secret variables
+        for key in credential_secret_variables:
+            if key in credentials and credentials[key] is not None:
+                try:
+                    credentials[key] = encrypter.decrypt_token(tenant_id=self.tenant_id, token=credentials[key])
+                except Exception:
+                    pass
+
+        return self.obfuscated_credentials(
+            credentials=credentials,
+            credential_form_schemas=self.provider.provider_credential_schema.credential_form_schemas
+            if self.provider.provider_credential_schema
+            else [],
+        )
+
+    def _check_provider_credential_name_exists(
+        self, credential_name: str, session: Session, exclude_id: str | None = None
+    ) -> bool:
+        """
+        not allowed same name when create or update a credential
+        """
+        stmt = select(ProviderCredential.id).where(
+            ProviderCredential.tenant_id == self.tenant_id,
+            ProviderCredential.provider_name == self.provider.provider,
+            ProviderCredential.credential_name == credential_name,
+        )
+        if exclude_id:
+            stmt = stmt.where(ProviderCredential.id != exclude_id)
+        return session.execute(stmt).scalar_one_or_none() is not None
+
+    def get_provider_credential(self, credential_id: str | None = None) -> dict | None:
+        """
+        Get provider credentials.
 
         :param credential_id: if provided, return the specified credential
         :return:
         """
 
         if credential_id:
-            # Extract secret variables from provider credential schema
-            credential_secret_variables = self.extract_secret_variables(
-                self.provider.provider_credential_schema.credential_form_schemas
-                if self.provider.provider_credential_schema
-                else []
-            )
-
-            # Prefer the actual provider record name if exists (to handle aliased provider names)
-            provider_record = self._get_custom_provider_credential()
-            provider_name = provider_record.provider_name if provider_record else self.provider.provider
-
-            credential = (
-                db.session.query(ProviderCredential)
-                .filter_by(id=credential_id, tenant_id=self.tenant_id, provider_name=provider_name)
-                .first()
-            )
-
-            if not credential or not credential.encrypted_config:
-                raise ValueError(f"Credential with id {credential_id} not found.")
-
-            try:
-                credentials = json.loads(credential.encrypted_config)
-            except JSONDecodeError:
-                credentials = {}
-
-            # Decrypt secret variables
-            for key in credential_secret_variables:
-                if key in credentials and credentials[key] is not None:
-                    try:
-                        credentials[key] = encrypter.decrypt_token(self.tenant_id, credentials[key])
-                    except Exception:
-                        pass
-
-            return self.obfuscated_credentials(
-                credentials=credentials,
-                credential_form_schemas=self.provider.provider_credential_schema.credential_form_schemas
-                if self.provider.provider_credential_schema
-                else [],
-            )
+            return self._get_specific_provider_credential(credential_id)
 
         # Default behavior: return current active provider credentials
         credentials = self.custom_configuration.provider.credentials
@@ -224,124 +279,113 @@ class ProviderConfiguration(BaseModel):
             else [],
         )
 
-    def _get_custom_provider_credential(self) -> Provider | None:
-        """
-        Get custom provider credentials.
-        """
-        # get provider
-        model_provider_id = ModelProviderID(self.provider.provider)
-        provider_names = [self.provider.provider]
-        if model_provider_id.is_langgenius():
-            provider_names.append(model_provider_id.provider_name)
-
-        provider_record = (
-            db.session.query(Provider)
-            .where(
-                Provider.tenant_id == self.tenant_id,
-                Provider.provider_type == ProviderType.CUSTOM.value,
-                Provider.provider_name.in_(provider_names),
-            )
-            .first()
-        )
-
-        return provider_record
-
-    def custom_credentials_validate(self, credentials: dict) -> tuple[Provider | None, dict]:
+    def validate_provider_credentials(
+        self, credentials: dict, session: Session | None = None
+    ) -> tuple[Provider | None, dict]:
         """
         Validate custom credentials.
         :param credentials: provider credentials
+        :param session: optional database session
         :return:
         """
-        provider_record = self._get_custom_provider_credential()
 
-        # Get provider credential secret variables
-        provider_credential_secret_variables = self.extract_secret_variables(
-            self.provider.provider_credential_schema.credential_form_schemas
-            if self.provider.provider_credential_schema
-            else []
-        )
+        def _validate(s: Session) -> tuple[Provider | None, dict]:
+            provider_record = self._get_provider_record(s)
 
-        if provider_record:
-            try:
-                # fix origin data
-                if provider_record.encrypted_config:
-                    if not provider_record.encrypted_config.startswith("{"):
-                        original_credentials = {"openai_api_key": provider_record.encrypted_config}
+            # Get provider credential secret variables
+            provider_credential_secret_variables = self.extract_secret_variables(
+                self.provider.provider_credential_schema.credential_form_schemas
+                if self.provider.provider_credential_schema
+                else []
+            )
+
+            if provider_record:
+                try:
+                    # fix origin data
+                    if provider_record.encrypted_config:
+                        if not provider_record.encrypted_config.startswith("{"):
+                            original_credentials = {"openai_api_key": provider_record.encrypted_config}
+                        else:
+                            original_credentials = json.loads(provider_record.encrypted_config)
                     else:
-                        original_credentials = json.loads(provider_record.encrypted_config)
-                else:
+                        original_credentials = {}
+                except JSONDecodeError:
                     original_credentials = {}
-            except JSONDecodeError:
-                original_credentials = {}
 
-            # encrypt credentials
-            for key, value in credentials.items():
+                # encrypt credentials
+                for key, value in credentials.items():
+                    if key in provider_credential_secret_variables:
+                        # if send [__HIDDEN__] in secret input, it will be same as original value
+                        if value == HIDDEN_VALUE and key in original_credentials:
+                            credentials[key] = encrypter.decrypt_token(
+                                tenant_id=self.tenant_id, token=original_credentials[key]
+                            )
+
+            model_provider_factory = ModelProviderFactory(self.tenant_id)
+            validated_credentials = model_provider_factory.provider_credentials_validate(
+                provider=self.provider.provider, credentials=credentials
+            )
+
+            for key, value in validated_credentials.items():
                 if key in provider_credential_secret_variables:
-                    # if send [__HIDDEN__] in secret input, it will be same as original value
-                    if value == HIDDEN_VALUE and key in original_credentials:
-                        credentials[key] = encrypter.decrypt_token(self.tenant_id, original_credentials[key])
+                    validated_credentials[key] = encrypter.encrypt_token(self.tenant_id, value)
 
-        model_provider_factory = ModelProviderFactory(self.tenant_id)
-        credentials = model_provider_factory.provider_credentials_validate(
-            provider=self.provider.provider, credentials=credentials
-        )
+            return provider_record, validated_credentials
 
-        for key, value in credentials.items():
-            if key in provider_credential_secret_variables:
-                credentials[key] = encrypter.encrypt_token(self.tenant_id, value)
+        if session:
+            return _validate(session)
+        else:
+            with Session(db.engine) as new_session:
+                return _validate(new_session)
 
-        return provider_record, credentials
-
-    def add_custom_credential(self, credentials: dict, credential_name: str) -> None:
+    def create_provider_credential(self, credentials: dict, credential_name: str) -> None:
         """
         Add custom provider credentials.
         :param credentials: provider credentials
         :param credential_name: credential name
         :return:
         """
-        existing_credential = (
-            db.session.query(ProviderCredential)
-            .filter_by(tenant_id=self.tenant_id, provider_name=self.provider.provider, credential_name=credential_name)
-            .first()
-        )
+        with Session(db.engine) as session:
+            if self._check_provider_credential_name_exists(credential_name=credential_name, session=session):
+                raise ValueError(f"Credential with name '{credential_name}' already exists.")
 
-        if existing_credential:
-            raise ValueError(f"Credential with name '{credential_name}' already exists.")
+            provider_record, credentials = self.validate_provider_credentials(credentials=credentials, session=session)
+            try:
+                new_record = ProviderCredential(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    encrypted_config=json.dumps(credentials),
+                    credential_name=credential_name,
+                )
+                session.add(new_record)
+                session.flush()
 
-        provider_record, credentials = self.custom_credentials_validate(credentials)
-        new_record = ProviderCredential(
-            tenant_id=self.tenant_id,
-            provider_name=self.provider.provider,
-            encrypted_config=json.dumps(credentials),
-            credential_name=credential_name,
-        )
-        db.session.add(new_record)
-        db.session.commit()
+                if not provider_record:
+                    # If provider record does not exist, create it
+                    provider_record = Provider(
+                        tenant_id=self.tenant_id,
+                        provider_name=self.provider.provider,
+                        provider_type=ProviderType.CUSTOM.value,
+                        is_valid=True,
+                        credential_id=new_record.id,
+                    )
+                    session.add(provider_record)
 
-        if not provider_record:
-            # If provider record does not exist, create it
-            provider_record = Provider(
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                provider_type=ProviderType.CUSTOM.value,
-                is_valid=True,
-                credential_id=new_record.id,
-            )
+                    provider_model_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=provider_record.id,
+                        cache_type=ProviderCredentialsCacheType.PROVIDER,
+                    )
+                    provider_model_credentials_cache.delete()
 
-            db.session.add(provider_record)
-            db.session.commit()
+                    self.switch_preferred_provider_type(provider_type=ProviderType.CUSTOM, session=session)
 
-            provider_model_credentials_cache = ProviderCredentialsCache(
-                tenant_id=self.tenant_id,
-                identity_id=provider_record.id,
-                cache_type=ProviderCredentialsCacheType.PROVIDER,
-            )
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
-            provider_model_credentials_cache.delete()
-
-            self.switch_preferred_provider_type(ProviderType.CUSTOM)
-
-    def update_custom_credential(
+    def update_provider_credential(
         self,
         credentials: dict,
         credential_id: str,
@@ -355,48 +399,54 @@ class ProviderConfiguration(BaseModel):
         :param credential_name: credential name
         :return:
         """
-        existing_credential = (
-            db.session.query(ProviderCredential)
-            .filter_by(tenant_id=self.tenant_id, provider_name=self.provider.provider, credential_name=credential_name)
-            .filter(ProviderCredential.id != credential_id)  # except current credential
-            .first()
-        )
+        with Session(db.engine) as session:
+            try:
+                if self._check_provider_credential_name_exists(
+                    credential_name=credential_name, session=session, exclude_id=credential_id
+                ):
+                    raise ValueError(f"Credential with name '{credential_name}' already exists.")
 
-        if existing_credential:
-            raise ValueError(f"Credential with name '{credential_name}' already exists.")
+                provider_record, credentials = self.validate_provider_credentials(
+                    credentials=credentials, session=session
+                )
+                stmt = select(ProviderCredential).where(
+                    ProviderCredential.id == credential_id,
+                    ProviderCredential.tenant_id == self.tenant_id,
+                    ProviderCredential.provider_name == self.provider.provider,
+                )
 
-        provider_record, credentials = self.custom_credentials_validate(credentials)
+                # Get the credential record to update
+                credential_record = session.execute(stmt).scalar_one_or_none()
+                if not credential_record:
+                    raise ValueError("Credential record not found.")
 
-        # Get the credential record to update
-        credential_record = (
-            db.session.query(ProviderCredential)
-            .filter_by(id=credential_id, tenant_id=self.tenant_id, provider_name=self.provider.provider)
-            .first()
-        )
+                # Update credential
+                credential_record.encrypted_config = json.dumps(credentials)
+                credential_record.credential_name = credential_name
+                credential_record.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
 
-        if not credential_record:
-            raise ValueError(f"Credential with id {credential_id} not found.")
+                session.commit()
 
-        # Update credential
-        credential_record.encrypted_config = json.dumps(credentials)
-        credential_record.credential_name = credential_name
+                if provider_record and provider_record.credential_id == credential_id:
+                    provider_model_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=provider_record.id,
+                        cache_type=ProviderCredentialsCacheType.PROVIDER,
+                    )
+                    provider_model_credentials_cache.delete()
 
-        db.session.commit()
-
-        if provider_record and provider_record.credential_id == credential_id:
-            provider_model_credentials_cache = ProviderCredentialsCache(
-                tenant_id=self.tenant_id,
-                identity_id=provider_record.id,
-                cache_type=ProviderCredentialsCacheType.PROVIDER,
-            )
-            provider_model_credentials_cache.delete()
-
-        self._update_load_balancing_configs_with_credential(
-            credential_id, credential_record, credential_source="provider"
-        )
+                self._update_load_balancing_configs_with_credential(
+                    credential_id=credential_id,
+                    credential_record=credential_record,
+                    credential_source="provider",
+                    session=session,
+                )
+            except Exception:
+                session.rollback()
+                raise
 
     def _update_load_balancing_configs_with_credential(
-        self, credential_id: str, credential_record: dict, credential_source: str
+        self, credential_id: str, credential_record: dict, credential_source: str, session: Session
     ) -> None:
         """
         Update load balancing configurations that reference the given credential_id.
@@ -404,19 +454,17 @@ class ProviderConfiguration(BaseModel):
         :param credential_id: credential id
         :param credential_record: the encrypted_config and credential_name
         :param credential_source: the credential comes from the provider_credential(`provider`) or the provider_model_credential(`custom_model`)
+        :param session: the database session
         :return:
         """
         # Find all load balancing configs that use this credential_id
-        load_balancing_configs = (
-            db.session.query(LoadBalancingModelConfig)
-            .filter_by(
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                credential_id=credential_id,
-                credential_source_type=credential_source,
-            )
-            .all()
+        stmt = select(LoadBalancingModelConfig).where(
+            LoadBalancingModelConfig.tenant_id == self.tenant_id,
+            LoadBalancingModelConfig.provider_name == self.provider.provider,
+            LoadBalancingModelConfig.credential_id == credential_id,
+            LoadBalancingModelConfig.credential_source_type == credential_source,
         )
+        load_balancing_configs = session.execute(stmt).scalars().all()
 
         if not load_balancing_configs:
             return
@@ -436,79 +484,82 @@ class ProviderConfiguration(BaseModel):
             )
             lb_credentials_cache.delete()
 
-        db.session.commit()
+        session.commit()
 
-    def delete_custom_credential(self, credential_id: str) -> None:
+    def delete_provider_credential(self, credential_id: str) -> None:
         """
         Delete a saved provider credential (by credential_id).
 
         :param credential_id: credential id
         :return:
         """
-        credential = (
-            db.session.query(ProviderCredential)
-            .filter_by(id=credential_id, tenant_id=self.tenant_id, provider_name=self.provider.provider)
-            .first()
-        )
-
-        if not credential:
-            raise ValueError(f"Credential with id {credential_id} not found.")
-
-        # Check if this credential is used in load balancing configs
-        lb_configs_using_credential = (
-            db.session.query(LoadBalancingModelConfig)
-            .filter_by(
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                credential_id=credential_id,
-                credential_source_type="provider",
+        with Session(db.engine) as session:
+            stmt = select(ProviderCredential).where(
+                ProviderCredential.id == credential_id,
+                ProviderCredential.tenant_id == self.tenant_id,
+                ProviderCredential.provider_name == self.provider.provider,
             )
-            .all()
-        )
 
-        if lb_configs_using_credential:
-            for lb_config in lb_configs_using_credential:
-                lb_credentials_cache = ProviderCredentialsCache(
-                    tenant_id=self.tenant_id,
-                    identity_id=lb_config.id,
-                    cache_type=ProviderCredentialsCacheType.LOAD_BALANCING_MODEL,
+            # Get the credential record to update
+            credential_record = session.execute(stmt).scalar_one_or_none()
+            if not credential_record:
+                raise ValueError("Credential record not found.")
+
+            # Check if this credential is used in load balancing configs
+            stmt = select(LoadBalancingModelConfig).where(
+                LoadBalancingModelConfig.tenant_id == self.tenant_id,
+                LoadBalancingModelConfig.provider_name == self.provider.provider,
+                LoadBalancingModelConfig.credential_id == credential_id,
+                LoadBalancingModelConfig.credential_source_type == "provider",
+            )
+            lb_configs_using_credential = session.execute(stmt).scalars().all()
+            try:
+                for lb_config in lb_configs_using_credential:
+                    lb_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=lb_config.id,
+                        cache_type=ProviderCredentialsCacheType.LOAD_BALANCING_MODEL,
+                    )
+                    lb_credentials_cache.delete()
+
+                    lb_config.credential_id = None
+                    lb_config.encrypted_config = None
+                    lb_config.enabled = False
+                    lb_config.name = "__delete__"
+                    lb_config.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+                    session.add(lb_config)
+
+                # Check if this is the currently active credential
+                provider_record = self._get_provider_record(session)
+
+                # Check available credentials count BEFORE deleting
+                # if this is the last credential, we need to delete the provider record
+                stmt = select(func.count(ProviderCredential.id)).where(
+                    ProviderCredential.tenant_id == self.tenant_id,
+                    ProviderCredential.provider_name == self.provider.provider,
                 )
-                lb_credentials_cache.delete()
-                lb_config.credential_id = None
-                lb_config.encrypted_config = None
-                lb_config.enabled = False
-                lb_config.name = "__delete__"
+                available_credentials_count = session.execute(stmt).scalar()
+                session.delete(credential_record)
 
-                db.session.add(lb_config)
+                if provider_record and available_credentials_count <= 1:
+                    # If all credentials are deleted, delete the provider record, switch to system provider type
+                    session.delete(provider_record)
+                elif provider_record and provider_record.credential_id == credential_id:
+                    provider_record.credential_id = None
+                    provider_record.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
 
-        # Check if this is the currently active credential
-        provider_record = self._get_custom_provider_credential()
+                    provider_model_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=provider_record.id,
+                        cache_type=ProviderCredentialsCacheType.PROVIDER,
+                    )
+                    provider_model_credentials_cache.delete()
+                    self.switch_preferred_provider_type(provider_type=ProviderType.SYSTEM, session=session)
 
-        # Check available credentials count BEFORE deleting
-        # if this is the last credential, we need to delete the provider record
-        available_credentials_count = (
-            db.session.query(ProviderCredential)
-            .filter_by(tenant_id=self.tenant_id, provider_name=self.provider.provider)
-            .count()
-        )
-
-        db.session.delete(credential)
-
-        if provider_record and available_credentials_count <= 1:
-            # If all credentials are deleted, delete the provider record, switch to system provider type
-            db.session.delete(provider_record)
-        elif provider_record and provider_record.credential_id == credential_id:
-            provider_record.credential_id = None
-
-            provider_model_credentials_cache = ProviderCredentialsCache(
-                tenant_id=self.tenant_id,
-                identity_id=provider_record.id,
-                cache_type=ProviderCredentialsCacheType.PROVIDER,
-            )
-            provider_model_credentials_cache.delete()
-            self.switch_preferred_provider_type(ProviderType.SYSTEM)
-
-        db.session.commit()
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
     def switch_active_provider_credential(self, credential_id: str) -> None:
         """
@@ -517,30 +568,128 @@ class ProviderConfiguration(BaseModel):
         :param credential_id: credential id
         :return:
         """
-        credential = (
-            db.session.query(ProviderCredential)
-            .filter_by(id=credential_id, tenant_id=self.tenant_id, provider_name=self.provider.provider)
-            .first()
+        with Session(db.engine) as session:
+            stmt = select(ProviderCredential).where(
+                ProviderCredential.id == credential_id,
+                ProviderCredential.tenant_id == self.tenant_id,
+                ProviderCredential.provider_name == self.provider.provider,
+            )
+            credential_record = session.execute(stmt).scalar_one_or_none()
+            if not credential_record:
+                raise ValueError("Credential record not found.")
+
+            provider_record = self._get_provider_record(session)
+            if not provider_record:
+                raise ValueError("Provider record not found.")
+
+            try:
+                provider_record.credential_id = credential_record.id
+                provider_record.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+                session.commit()
+
+                provider_model_credentials_cache = ProviderCredentialsCache(
+                    tenant_id=self.tenant_id,
+                    identity_id=provider_record.id,
+                    cache_type=ProviderCredentialsCacheType.PROVIDER,
+                )
+                provider_model_credentials_cache.delete()
+                self.switch_preferred_provider_type(ProviderType.CUSTOM, session=session)
+            except Exception:
+                session.rollback()
+                raise
+
+    def _get_custom_model_record(
+        self,
+        model_type: ModelType,
+        model: str,
+        session: Session,
+    ) -> ProviderModel | None:
+        """
+        Get custom model credentials.
+        """
+        # get provider model
+        model_provider_id = ModelProviderID(self.provider.provider)
+        provider_names = [self.provider.provider]
+        if model_provider_id.is_langgenius():
+            provider_names.append(model_provider_id.provider_name)
+
+        stmt = select(ProviderModel).where(
+            ProviderModel.tenant_id == self.tenant_id,
+            ProviderModel.provider_name.in_(provider_names),
+            ProviderModel.model_name == model,
+            ProviderModel.model_type == model_type.to_origin_model_type(),
         )
 
-        if not credential:
+        return session.execute(stmt).scalar_one_or_none()
+
+    def _get_specific_custom_model_credential(
+        self, model_type: ModelType, model: str, credential_id: str
+    ) -> dict | None:
+        """
+        Get a specific provider credential by ID.
+        :param credential_id: Credential ID
+        :return:
+        """
+        model_credential_secret_variables = self.extract_secret_variables(
+            self.provider.model_credential_schema.credential_form_schemas
+            if self.provider.model_credential_schema
+            else []
+        )
+
+        with Session(db.engine) as session:
+            model_record = self._get_custom_model_record(model_type=model_type, model=model, session=session)
+
+            stmt = select(ProviderModelCredential).where(
+                ProviderModelCredential.id == credential_id,
+                ProviderModelCredential.tenant_id == self.tenant_id,
+                ProviderModelCredential.provider_name == model_record.provider_name,
+                ProviderModelCredential.model_name == model_record.model_name,
+                ProviderModelCredential.model_type == model_record.model_type,
+            )
+
+            credential = session.execute(stmt).scalar_one_or_none()
+
+        if not credential or not credential.encrypted_config:
             raise ValueError(f"Credential with id {credential_id} not found.")
 
-        provider_record = self._get_custom_provider_credential()
+        try:
+            credentials = json.loads(credential.encrypted_config)
+        except JSONDecodeError:
+            credentials = {}
 
-        if not provider_record:
-            raise ValueError("Provider record not found.")
+        # Decrypt secret variables
+        for key in model_credential_secret_variables:
+            if key in credentials and credentials[key] is not None:
+                try:
+                    credentials[key] = encrypter.decrypt_token(tenant_id=self.tenant_id, token=credentials[key])
+                except Exception:
+                    pass
 
-        provider_record.credential_id = credential.id
-
-        db.session.commit()
-
-        provider_model_credentials_cache = ProviderCredentialsCache(
-            tenant_id=self.tenant_id, identity_id=provider_record.id, cache_type=ProviderCredentialsCacheType.PROVIDER
+        return self.obfuscated_credentials(
+            credentials=credentials,
+            credential_form_schemas=self.provider.model_credential_schema.credential_form_schemas
+            if self.provider.model_credential_schema
+            else [],
         )
-        provider_model_credentials_cache.delete()
 
-    def get_custom_model_credentials(
+    def _check_custom_model_credential_name_exists(
+        self, model_type: ModelType, model: str, credential_name: str, session: Session, exclude_id: str | None = None
+    ) -> bool:
+        """
+        not allowed same name when create or update a credential
+        """
+        stmt = select(ProviderModelCredential).where(
+            ProviderModelCredential.tenant_id == self.tenant_id,
+            ProviderModelCredential.provider_name == self.provider.provider,
+            ProviderModelCredential.model_name == model,
+            ProviderModelCredential.model_type == model_type.to_origin_model_type(),
+            ProviderModelCredential.credential_name == credential_name,
+        )
+        if exclude_id:
+            stmt = stmt.where(ProviderModelCredential.id != exclude_id)
+        return session.execute(stmt).scalar_one_or_none() is not None
+
+    def get_custom_model_credential(
         self, model_type: ModelType, model: str, credential_id: str | None
     ) -> Optional[dict]:
         """
@@ -552,330 +701,274 @@ class ProviderConfiguration(BaseModel):
         """
         # If credential_id is provided, return the specific credential
         if credential_id:
-            model_credential_secret_variables = self.extract_secret_variables(
-                self.provider.model_credential_schema.credential_form_schemas
-                if self.provider.model_credential_schema
-                else []
+            return self._get_specific_custom_model_credential(
+                model_type=model_type, model=model, credential_id=credential_id
             )
 
-            model_record = self._get_custom_model_record(model_type, model)
+        for model_configuration in self.custom_configuration.models:
+            if model_configuration.model_type == model_type and model_configuration.model == model:
+                credentials = model_configuration.credentials
 
-            credential = (
-                db.session.query(ProviderModelCredential)
-                .filter_by(
-                    id=credential_id,
-                    tenant_id=self.tenant_id,
-                    provider_name=model_record.provider_name,
-                    model_name=model_record.model_name,
-                    model_type=model_record.model_type,
+                return self.obfuscated_credentials(
+                    credentials=credentials,
+                    credential_form_schemas=self.provider.model_credential_schema.credential_form_schemas
+                    if self.provider.model_credential_schema
+                    else [],
                 )
-                .first()
-            )
 
-            if not credential or not credential.encrypted_config:
-                raise ValueError(f"Credential with id {credential_id} not found.")
-
-            try:
-                credentials = json.loads(credential.encrypted_config)
-            except JSONDecodeError:
-                credentials = {}
-
-            # Decrypt secret variables
-            for key in model_credential_secret_variables:
-                if key in credentials and credentials[key] is not None:
-                    try:
-                        credentials[key] = encrypter.decrypt_token(self.tenant_id, credentials[key])
-                    except Exception:
-                        pass
-
-            return self.obfuscated_credentials(
-                credentials=credentials,
-                credential_form_schemas=self.provider.model_credential_schema.credential_form_schemas
-                if self.provider.model_credential_schema
-                else [],
-            )
-        else:
-            for model_configuration in self.custom_configuration.models:
-                if model_configuration.model_type == model_type and model_configuration.model == model:
-                    credentials = model_configuration.credentials
-
-                    return self.obfuscated_credentials(
-                        credentials=credentials,
-                        credential_form_schemas=self.provider.model_credential_schema.credential_form_schemas
-                        if self.provider.model_credential_schema
-                        else [],
-                    )
-
-    def _get_custom_model_record(
-        self,
-        model_type: ModelType,
-        model: str,
-    ) -> ProviderModel | None:
-        """
-        Get custom model credentials.
-        """
-        # get provider model
-        model_provider_id = ModelProviderID(self.provider.provider)
-        provider_names = [self.provider.provider]
-        if model_provider_id.is_langgenius():
-            provider_names.append(model_provider_id.provider_name)
-
-        provider_model_record = (
-            db.session.query(ProviderModel)
-            .where(
-                ProviderModel.tenant_id == self.tenant_id,
-                ProviderModel.provider_name.in_(provider_names),
-                ProviderModel.model_name == model,
-                ProviderModel.model_type == model_type.to_origin_model_type(),
-            )
-            .first()
-        )
-
-        return provider_model_record
-
-    def custom_model_credentials_validate(
-        self, model_type: ModelType, model: str, credentials: dict
+    def validate_custom_model_credentials(
+        self, model_type: ModelType, model: str, credentials: dict, session: Session | None = None
     ) -> tuple[ProviderModel | None, dict]:
         """
         Validate custom model credentials.
 
         :param model_type: model type
         :param model: model name
-        :param credentials: model credentials
+        :param credentials: model credentials dict
         :return:
         """
-        # get provider model
-        provider_model_record = self._get_custom_model_record(model_type, model)
 
-        # Get provider credential secret variables
-        provider_credential_secret_variables = self.extract_secret_variables(
-            self.provider.model_credential_schema.credential_form_schemas
-            if self.provider.model_credential_schema
-            else []
-        )
+        def _validate(s: Session) -> tuple[ProviderModel | None, dict]:
+            # get provider model
+            provider_model_record = self._get_custom_model_record(model_type=model_type, model=model, session=s)
 
-        if provider_model_record:
-            try:
-                original_credentials = (
-                    json.loads(provider_model_record.encrypted_config) if provider_model_record.encrypted_config else {}
-                )
-            except JSONDecodeError:
-                original_credentials = {}
+            # Get provider credential secret variables
+            provider_credential_secret_variables = self.extract_secret_variables(
+                self.provider.model_credential_schema.credential_form_schemas
+                if self.provider.model_credential_schema
+                else []
+            )
 
-            # decrypt credentials
-            for key, value in credentials.items():
+            if provider_model_record:
+                try:
+                    original_credentials = (
+                        json.loads(provider_model_record.encrypted_config)
+                        if provider_model_record.encrypted_config
+                        else {}
+                    )
+                except JSONDecodeError:
+                    original_credentials = {}
+
+                # decrypt credentials
+                for key, value in credentials.items():
+                    if key in provider_credential_secret_variables:
+                        # if send [__HIDDEN__] in secret input, it will be same as original value
+                        if value == HIDDEN_VALUE and key in original_credentials:
+                            credentials[key] = encrypter.decrypt_token(
+                                tenant_id=self.tenant_id, token=original_credentials[key]
+                            )
+
+            model_provider_factory = ModelProviderFactory(self.tenant_id)
+            validated_credentials = model_provider_factory.model_credentials_validate(
+                provider=self.provider.provider, model_type=model_type, model=model, credentials=credentials
+            )
+
+            for key, value in validated_credentials.items():
                 if key in provider_credential_secret_variables:
-                    # if send [__HIDDEN__] in secret input, it will be same as original value
-                    if value == HIDDEN_VALUE and key in original_credentials:
-                        credentials[key] = encrypter.decrypt_token(self.tenant_id, original_credentials[key])
+                    validated_credentials[key] = encrypter.encrypt_token(self.tenant_id, value)
 
-        model_provider_factory = ModelProviderFactory(self.tenant_id)
-        credentials = model_provider_factory.model_credentials_validate(
-            provider=self.provider.provider, model_type=model_type, model=model, credentials=credentials
-        )
+            return provider_model_record, validated_credentials
 
-        for key, value in credentials.items():
-            if key in provider_credential_secret_variables:
-                credentials[key] = encrypter.encrypt_token(self.tenant_id, value)
+        if session:
+            return _validate(session)
+        else:
+            with Session(db.engine) as new_session:
+                return _validate(new_session)
 
-        return provider_model_record, credentials
-
-    def add_custom_model_credential(
+    def create_custom_model_credential(
         self, model_type: ModelType, model: str, credentials: dict, credential_name: str
     ) -> None:
         """
-        Add or update custom model credentials.
+        Create a custom model credential.
 
         :param model_type: model type
         :param model: model name
-        :param credentials: model credentials
+        :param credentials: model credentials dict
         :return:
         """
-        existing_credential = (
-            db.session.query(ProviderModelCredential)
-            .filter_by(
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                model_name=model,
-                model_type=model_type.to_origin_model_type(),
-                credential_name=credential_name,
-            )
-            .first()
-        )
-
-        if existing_credential:
-            raise ValueError(f"Model credential with name '{credential_name}' already exists for {model}.")
-
-        # validate custom model config
-        provider_model_record, credentials = self.custom_model_credentials_validate(model_type, model, credentials)
-
-        credential = ProviderModelCredential(
-            tenant_id=self.tenant_id,
-            provider_name=self.provider.provider,
-            model_name=model,
-            model_type=model_type.to_origin_model_type(),
-            encrypted_config=json.dumps(credentials),
-            credential_name=credential_name,
-        )
-        db.session.add(credential)
-        db.session.commit()
-
-        # save provider model
-        if not provider_model_record:
-            provider_model_record = ProviderModel()
-            provider_model_record.tenant_id = self.tenant_id
-            provider_model_record.provider_name = self.provider.provider
-            provider_model_record.model_name = model
-            provider_model_record.model_type = model_type.to_origin_model_type()
-            provider_model_record.credential_id = credential.id
-            provider_model_record.is_valid = True
-            db.session.add(provider_model_record)
-            db.session.commit()
-
-            provider_model_credentials_cache = ProviderCredentialsCache(
-                tenant_id=self.tenant_id,
-                identity_id=provider_model_record.id,
-                cache_type=ProviderCredentialsCacheType.MODEL,
+        with Session(db.engine) as session:
+            if self._check_custom_model_credential_name_exists(
+                model=model, model_type=model_type, credential_name=credential_name, session=session
+            ):
+                raise ValueError(f"Model credential with name '{credential_name}' already exists for {model}.")
+            # validate custom model config
+            provider_model_record, credentials = self.validate_custom_model_credentials(
+                model_type=model_type, model=model, credentials=credentials, session=session
             )
 
-            provider_model_credentials_cache.delete()
+            try:
+                credential = ProviderModelCredential(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    model_name=model,
+                    model_type=model_type.to_origin_model_type(),
+                    encrypted_config=json.dumps(credentials),
+                    credential_name=credential_name,
+                )
+                session.add(credential)
+                session.flush()
+
+                # save provider model
+                if not provider_model_record:
+                    provider_model_record = ProviderModel(
+                        tenant_id=self.tenant_id,
+                        provider_name=self.provider.provider,
+                        model_name=model,
+                        model_type=model_type.to_origin_model_type(),
+                        credential_id=credential.id,
+                        is_valid=True,
+                    )
+                    session.add(provider_model_record)
+
+                session.commit()
+
+                provider_model_credentials_cache = ProviderCredentialsCache(
+                    tenant_id=self.tenant_id,
+                    identity_id=provider_model_record.id,
+                    cache_type=ProviderCredentialsCacheType.MODEL,
+                )
+                provider_model_credentials_cache.delete()
+            except Exception:
+                session.rollback()
+                raise
 
     def update_custom_model_credential(
         self, model_type: ModelType, model: str, credentials: dict, credential_name: str, credential_id: str
     ) -> None:
         """
-        Add or update custom model credentials.
+        Update a custom model credential.
 
         :param model_type: model type
         :param model: model name
-        :param credentials: model credentials
+        :param credentials: model credentials dict
         :param credential_name: credential name
         :param credential_id: credential id
         :return:
         """
-        existing_credential = (
-            db.session.query(ProviderModelCredential)
-            .filter_by(
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                model_name=model,
-                model_type=model_type.to_origin_model_type(),
+        with Session(db.engine) as session:
+            if self._check_custom_model_credential_name_exists(
+                model=model,
+                model_type=model_type,
                 credential_name=credential_name,
+                session=session,
+                exclude_id=credential_id,
+            ):
+                raise ValueError(f"Model credential with name '{credential_name}' already exists for {model}.")
+            # validate custom model config
+            provider_model_record, credentials = self.validate_custom_model_credentials(
+                model_type=model_type, model=model, credentials=credentials, session=session
             )
-            .filter(ProviderModelCredential.id != credential_id)
-            .first()
-        )
 
-        if existing_credential:
-            raise ValueError(f"Model credential with name '{credential_name}' already exists for {model}.")
-        # validate custom model config
-        provider_model_record, credentials = self.custom_model_credentials_validate(model_type, model, credentials)
-
-        credential_record = (
-            db.session.query(ProviderModelCredential)
-            .filter_by(
-                id=credential_id,
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                model_name=model,
-                model_type=model_type.to_origin_model_type(),
+            stmt = select(ProviderModelCredential).where(
+                ProviderModelCredential.id == credential_id,
+                ProviderModelCredential.tenant_id == self.tenant_id,
+                ProviderModelCredential.provider_name == self.provider.provider,
+                ProviderModelCredential.model_name == model,
+                ProviderModelCredential.model_type == model_type.to_origin_model_type(),
             )
-            .first()
-        )
-        if not credential_record:
-            raise ValueError(f"Credential with id {credential_id} not found.")
+            credential_record = session.execute(stmt).scalar_one_or_none()
+            if not credential_record:
+                raise ValueError("Credential record not found.")
 
-        # Update credential
-        credential_record.encrypted_config = json.dumps(credentials)
-        credential_record.credential_name = credential_name
+            try:
+                # Update credential
+                credential_record.encrypted_config = json.dumps(credentials)
+                credential_record.credential_name = credential_name
+                credential_record.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+                session.commit()
 
-        db.session.commit()
+                if provider_model_record and provider_model_record.credential_id == credential_id:
+                    provider_model_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=provider_model_record.id,
+                        cache_type=ProviderCredentialsCacheType.MODEL,
+                    )
+                    provider_model_credentials_cache.delete()
 
-        if provider_model_record and provider_model_record.credential_id == credential_id:
-            provider_model_credentials_cache = ProviderCredentialsCache(
-                tenant_id=self.tenant_id,
-                identity_id=provider_model_record.id,
-                cache_type=ProviderCredentialsCacheType.MODEL,
-            )
-            provider_model_credentials_cache.delete()
+                self._update_load_balancing_configs_with_credential(
+                    credential_id=credential_id,
+                    credential_record=credential_record,
+                    credential_source="custom_model",
+                    session=session,
+                )
+            except Exception:
+                session.rollback()
+                raise
 
-        self._update_load_balancing_configs_with_credential(
-            credential_id, credential_record, credential_source="custom_model"
-        )
-
-    def remove_custom_model_credential(self, model_type: ModelType, model: str, credential_id: str) -> None:
+    def delete_custom_model_credential(self, model_type: ModelType, model: str, credential_id: str) -> None:
         """
         Delete a saved provider credential (by credential_id).
 
         :param credential_id: credential id
         :return:
         """
-        credential_record = (
-            db.session.query(ProviderModelCredential)
-            .filter_by(
-                id=credential_id,
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                model_name=model,
-                model_type=model_type.to_origin_model_type(),
+        with Session(db.engine) as session:
+            stmt = select(ProviderModelCredential).where(
+                ProviderModelCredential.id == credential_id,
+                ProviderModelCredential.tenant_id == self.tenant_id,
+                ProviderModelCredential.provider_name == self.provider.provider,
+                ProviderModelCredential.model_name == model,
+                ProviderModelCredential.model_type == model_type.to_origin_model_type(),
             )
-            .first()
-        )
-        if not credential_record:
-            raise ValueError(f"Credential with id {credential_id} not found.")
+            credential_record = session.execute(stmt).scalar_one_or_none()
+            if not credential_record:
+                raise ValueError("Credential record not found.")
 
-        # Check if this credential is used in load balancing configs
-        lb_configs_using_credential = (
-            db.session.query(LoadBalancingModelConfig)
-            .filter_by(tenant_id=self.tenant_id, provider_name=self.provider.provider, credential_id=credential_id)
-            .all()
-        )
+            stmt = select(LoadBalancingModelConfig).where(
+                LoadBalancingModelConfig.tenant_id == self.tenant_id,
+                LoadBalancingModelConfig.provider_name == self.provider.provider,
+                LoadBalancingModelConfig.credential_id == credential_id,
+                LoadBalancingModelConfig.credential_source_type == "custom_model",
+            )
+            lb_configs_using_credential = session.execute(stmt).scalars().all()
 
-        if lb_configs_using_credential:
-            for lb_config in lb_configs_using_credential:
-                lb_credentials_cache = ProviderCredentialsCache(
-                    tenant_id=self.tenant_id,
-                    identity_id=lb_config.id,
-                    cache_type=ProviderCredentialsCacheType.LOAD_BALANCING_MODEL,
+            try:
+                for lb_config in lb_configs_using_credential:
+                    lb_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=lb_config.id,
+                        cache_type=ProviderCredentialsCacheType.LOAD_BALANCING_MODEL,
+                    )
+                    lb_credentials_cache.delete()
+                    lb_config.credential_id = None
+                    lb_config.encrypted_config = None
+                    lb_config.enabled = False
+                    lb_config.name = "__delete__"
+                    lb_config.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+                    db.session.add(lb_config)
+
+                # Check if this is the currently active credential
+                provider_model_record = self._get_custom_model_record(model_type, model, session=session)
+
+                # Check available credentials count BEFORE deleting
+                # if this is the last credential, we need to delete the custom model record
+                stmt = select(func.count(ProviderModelCredential.id)).where(
+                    ProviderModelCredential.tenant_id == self.tenant_id,
+                    ProviderModelCredential.provider_name == self.provider.provider,
+                    ProviderModelCredential.model_name == model,
+                    ProviderModelCredential.model_type == model_type.to_origin_model_type(),
                 )
-                lb_credentials_cache.delete()
-                lb_config.credential_id = None
-                lb_config.encrypted_config = None
-                lb_config.enabled = False
-                lb_config.name = "__delete__"
-                db.session.add(lb_config)
+                available_credentials_count = session.execute(stmt).scalar()
+                session.delete(credential_record)
 
-        # Check if this is the currently active credential
-        provider_model_record = self._get_custom_model_record(model_type, model)
+                if provider_model_record and available_credentials_count <= 1:
+                    # If all credentials are deleted, delete the custom model record
+                    session.delete(provider_model_record)
+                elif provider_model_record and provider_model_record.credential_id == credential_id:
+                    provider_model_record.credential_id = None
+                    provider_model_record.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+                    provider_model_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=provider_model_record.id,
+                        cache_type=ProviderCredentialsCacheType.PROVIDER,
+                    )
+                    provider_model_credentials_cache.delete()
 
-        # Check available credentials count BEFORE deleting
-        # if this is the last credential, we need to delete the custom model record
-        available_credentials_count = (
-            db.session.query(ProviderModelCredential)
-            .filter_by(
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                model_name=model,
-                model_type=model_type.to_origin_model_type(),
-            )
-            .count()
-        )
+                session.commit()
 
-        db.session.delete(credential_record)
-
-        if provider_model_record and available_credentials_count <= 1:
-            # If all credentials are deleted, delete the custom model record
-            db.session.delete(provider_model_record)
-        elif provider_model_record and provider_model_record.credential_id == credential_id:
-            provider_model_record.credential_id = None
-            provider_model_credentials_cache = ProviderCredentialsCache(
-                tenant_id=self.tenant_id,
-                identity_id=provider_model_record.id,
-                cache_type=ProviderCredentialsCacheType.PROVIDER,
-            )
-            provider_model_credentials_cache.delete()
-
-        db.session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
     def switch_custom_model_credential(self, model_type: ModelType, model: str, credential_id: str) -> None:
         """
@@ -887,39 +980,37 @@ class ProviderConfiguration(BaseModel):
         :param credential_id: credential id
         :return:
         """
-        credential_record = (
-            db.session.query(ProviderModelCredential)
-            .filter_by(
-                id=credential_id,
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                model_name=model,
-                model_type=model_type.to_origin_model_type(),
+        with Session(db.engine) as session:
+            stmt = select(ProviderModelCredential).where(
+                ProviderModelCredential.id == credential_id,
+                ProviderModelCredential.tenant_id == self.tenant_id,
+                ProviderModelCredential.provider_name == self.provider.provider,
+                ProviderModelCredential.model_name == model,
+                ProviderModelCredential.model_type == model_type.to_origin_model_type(),
             )
-            .first()
-        )
-        if not credential_record:
-            raise ValueError(f"Credential with id {credential_id} not found.")
+            credential_record = session.execute(stmt).scalar_one_or_none()
+            if not credential_record:
+                raise ValueError("Credential record not found.")
 
-        # validate custom model config
-        provider_model_record = self._get_custom_model_record(model_type, model)
+            # validate custom model config
+            provider_model_record = self._get_custom_model_record(model_type=model_type, model=model, session=session)
 
-        if not provider_model_record:
-            # create provider model record
-            provider_model_record = ProviderModel(
-                tenant_id=self.tenant_id,
-                provider_name=self.provider.provider,
-                model_name=model,
-                model_type=model_type.to_origin_model_type(),
-                credential_id=credential_id,
-            )
-            db.session.add(provider_model_record)
-        else:
-            if provider_model_record.credential_id == credential_id:
-                raise ValueError("Can't add same credential")
-            provider_model_record.credential_id = credential_id
-
-        db.session.commit()
+            if not provider_model_record:
+                # create provider model record
+                provider_model_record = ProviderModel(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    model_name=model,
+                    model_type=model_type.to_origin_model_type(),
+                    credential_id=credential_id,
+                )
+            else:
+                if provider_model_record.credential_id == credential_record.id:
+                    raise ValueError("Can't add same credential")
+                provider_model_record.credential_id = credential_record.id
+                provider_model_record.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            session.add(provider_model_record)
+            session.commit()
 
     def delete_custom_model(self, model_type: ModelType, model: str) -> None:
         """
@@ -928,23 +1019,26 @@ class ProviderConfiguration(BaseModel):
         :param model: model name
         :return:
         """
-        # get provider model
-        provider_model_record = self._get_custom_model_record(model_type, model)
+        with Session(db.engine) as session:
+            # get provider model
+            provider_model_record = self._get_custom_model_record(model_type=model_type, model=model, session=session)
 
-        # delete provider model
-        if provider_model_record:
-            db.session.delete(provider_model_record)
-            db.session.commit()
+            # delete provider model
+            if provider_model_record:
+                session.delete(provider_model_record)
+                session.commit()
 
-            provider_model_credentials_cache = ProviderCredentialsCache(
-                tenant_id=self.tenant_id,
-                identity_id=provider_model_record.id,
-                cache_type=ProviderCredentialsCacheType.MODEL,
-            )
+                provider_model_credentials_cache = ProviderCredentialsCache(
+                    tenant_id=self.tenant_id,
+                    identity_id=provider_model_record.id,
+                    cache_type=ProviderCredentialsCacheType.MODEL,
+                )
 
-            provider_model_credentials_cache.delete()
+                provider_model_credentials_cache.delete()
 
-    def _get_provider_model_setting(self, model_type: ModelType, model: str) -> ProviderModelSetting | None:
+    def _get_provider_model_setting(
+        self, model_type: ModelType, model: str, session: Session
+    ) -> ProviderModelSetting | None:
         """
         Get provider model setting.
         """
@@ -953,16 +1047,13 @@ class ProviderConfiguration(BaseModel):
         if model_provider_id.is_langgenius():
             provider_names.append(model_provider_id.provider_name)
 
-        return (
-            db.session.query(ProviderModelSetting)
-            .where(
-                ProviderModelSetting.tenant_id == self.tenant_id,
-                ProviderModelSetting.provider_name.in_(provider_names),
-                ProviderModelSetting.model_type == model_type.to_origin_model_type(),
-                ProviderModelSetting.model_name == model,
-            )
-            .first()
+        stmt = select(ProviderModelSetting).where(
+            ProviderModelSetting.tenant_id == self.tenant_id,
+            ProviderModelSetting.provider_name.in_(provider_names),
+            ProviderModelSetting.model_type == model_type.to_origin_model_type(),
+            ProviderModelSetting.model_name == model,
         )
+        return session.execute(stmt).scalars().first()
 
     def enable_model(self, model_type: ModelType, model: str) -> ProviderModelSetting:
         """
@@ -971,21 +1062,23 @@ class ProviderConfiguration(BaseModel):
         :param model: model name
         :return:
         """
-        model_setting = self._get_provider_model_setting(model_type, model)
+        with Session(db.engine) as session:
+            model_setting = self._get_provider_model_setting(model_type=model_type, model=model, session=session)
 
-        if model_setting:
-            model_setting.enabled = True
-            model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-            db.session.commit()
-        else:
-            model_setting = ProviderModelSetting()
-            model_setting.tenant_id = self.tenant_id
-            model_setting.provider_name = self.provider.provider
-            model_setting.model_type = model_type.to_origin_model_type()
-            model_setting.model_name = model
-            model_setting.enabled = True
-            db.session.add(model_setting)
-            db.session.commit()
+            if model_setting:
+                model_setting.enabled = True
+                model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
+            else:
+                model_setting = ProviderModelSetting(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    model_type=model_type.to_origin_model_type(),
+                    model_name=model,
+                    enabled=True,
+                )
+                session.add(model_setting)
+            session.commit()
 
         return model_setting
 
@@ -996,21 +1089,22 @@ class ProviderConfiguration(BaseModel):
         :param model: model name
         :return:
         """
-        model_setting = self._get_provider_model_setting(model_type, model)
+        with Session(db.engine) as session:
+            model_setting = self._get_provider_model_setting(model_type=model_type, model=model, session=session)
 
-        if model_setting:
-            model_setting.enabled = False
-            model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-            db.session.commit()
-        else:
-            model_setting = ProviderModelSetting()
-            model_setting.tenant_id = self.tenant_id
-            model_setting.provider_name = self.provider.provider
-            model_setting.model_type = model_type.to_origin_model_type()
-            model_setting.model_name = model
-            model_setting.enabled = False
-            db.session.add(model_setting)
-            db.session.commit()
+            if model_setting:
+                model_setting.enabled = False
+                model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            else:
+                model_setting = ProviderModelSetting(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    model_type=model_type.to_origin_model_type(),
+                    model_name=model,
+                    enabled=False,
+                )
+                session.add(model_setting)
+            session.commit()
 
         return model_setting
 
@@ -1021,27 +1115,8 @@ class ProviderConfiguration(BaseModel):
         :param model: model name
         :return:
         """
-        return self._get_provider_model_setting(model_type, model)
-
-    def _get_load_balancing_config(self, model_type: ModelType, model: str) -> Optional[LoadBalancingModelConfig]:
-        """
-        Get load balancing config.
-        """
-        model_provider_id = ModelProviderID(self.provider.provider)
-        provider_names = [self.provider.provider]
-        if model_provider_id.is_langgenius():
-            provider_names.append(model_provider_id.provider_name)
-
-        return (
-            db.session.query(LoadBalancingModelConfig)
-            .where(
-                LoadBalancingModelConfig.tenant_id == self.tenant_id,
-                LoadBalancingModelConfig.provider_name.in_(provider_names),
-                LoadBalancingModelConfig.model_type == model_type.to_origin_model_type(),
-                LoadBalancingModelConfig.model_name == model,
-            )
-            .first()
-        )
+        with Session(db.engine) as session:
+            return self._get_provider_model_setting(model_type=model_type, model=model, session=session)
 
     def enable_model_load_balancing(self, model_type: ModelType, model: str) -> ProviderModelSetting:
         """
@@ -1055,35 +1130,32 @@ class ProviderConfiguration(BaseModel):
         if model_provider_id.is_langgenius():
             provider_names.append(model_provider_id.provider_name)
 
-        load_balancing_config_count = (
-            db.session.query(LoadBalancingModelConfig)
-            .where(
+        with Session(db.engine) as session:
+            stmt = select(func.count(LoadBalancingModelConfig.id)).where(
                 LoadBalancingModelConfig.tenant_id == self.tenant_id,
                 LoadBalancingModelConfig.provider_name.in_(provider_names),
                 LoadBalancingModelConfig.model_type == model_type.to_origin_model_type(),
                 LoadBalancingModelConfig.model_name == model,
             )
-            .count()
-        )
+            load_balancing_config_count = session.execute(stmt).scalar()
+            if load_balancing_config_count <= 1:
+                raise ValueError("Model load balancing configuration must be more than 1.")
 
-        if load_balancing_config_count <= 1:
-            raise ValueError("Model load balancing configuration must be more than 1.")
+            model_setting = self._get_provider_model_setting(model_type=model_type, model=model, session=session)
 
-        model_setting = self._get_provider_model_setting(model_type, model)
-
-        if model_setting:
-            model_setting.load_balancing_enabled = True
-            model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-            db.session.commit()
-        else:
-            model_setting = ProviderModelSetting()
-            model_setting.tenant_id = self.tenant_id
-            model_setting.provider_name = self.provider.provider
-            model_setting.model_type = model_type.to_origin_model_type()
-            model_setting.model_name = model
-            model_setting.load_balancing_enabled = True
-            db.session.add(model_setting)
-            db.session.commit()
+            if model_setting:
+                model_setting.load_balancing_enabled = True
+                model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            else:
+                model_setting = ProviderModelSetting(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    model_type=model_type.to_origin_model_type(),
+                    model_name=model,
+                    load_balancing_enabled=True,
+                )
+                session.add(model_setting)
+            session.commit()
 
         return model_setting
 
@@ -1094,35 +1166,23 @@ class ProviderConfiguration(BaseModel):
         :param model: model name
         :return:
         """
-        model_provider_id = ModelProviderID(self.provider.provider)
-        provider_names = [self.provider.provider]
-        if model_provider_id.is_langgenius():
-            provider_names.append(model_provider_id.provider_name)
 
-        model_setting = (
-            db.session.query(ProviderModelSetting)
-            .where(
-                ProviderModelSetting.tenant_id == self.tenant_id,
-                ProviderModelSetting.provider_name.in_(provider_names),
-                ProviderModelSetting.model_type == model_type.to_origin_model_type(),
-                ProviderModelSetting.model_name == model,
-            )
-            .first()
-        )
+        with Session(db.engine) as session:
+            model_setting = self._get_provider_model_setting(model_type=model_type, model=model, session=session)
 
-        if model_setting:
-            model_setting.load_balancing_enabled = False
-            model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
-            db.session.commit()
-        else:
-            model_setting = ProviderModelSetting()
-            model_setting.tenant_id = self.tenant_id
-            model_setting.provider_name = self.provider.provider
-            model_setting.model_type = model_type.to_origin_model_type()
-            model_setting.model_name = model
-            model_setting.load_balancing_enabled = False
-            db.session.add(model_setting)
-            db.session.commit()
+            if model_setting:
+                model_setting.load_balancing_enabled = False
+                model_setting.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+            else:
+                model_setting = ProviderModelSetting(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    model_type=model_type.to_origin_model_type(),
+                    model_name=model,
+                    load_balancing_enabled=False,
+                )
+                session.add(model_setting)
+            session.commit()
 
         return model_setting
 
@@ -1147,7 +1207,7 @@ class ProviderConfiguration(BaseModel):
             provider=self.provider.provider, model_type=model_type, model=model, credentials=credentials
         )
 
-    def switch_preferred_provider_type(self, provider_type: ProviderType) -> None:
+    def switch_preferred_provider_type(self, provider_type: ProviderType, session: Session | None = None) -> None:
         """
         Switch preferred provider type.
         :param provider_type:
@@ -1159,31 +1219,35 @@ class ProviderConfiguration(BaseModel):
         if provider_type == ProviderType.SYSTEM and not self.system_configuration.enabled:
             return
 
-        # get preferred provider
-        model_provider_id = ModelProviderID(self.provider.provider)
-        provider_names = [self.provider.provider]
-        if model_provider_id.is_langgenius():
-            provider_names.append(model_provider_id.provider_name)
+        def _switch(s: Session) -> None:
+            # get preferred provider
+            model_provider_id = ModelProviderID(self.provider.provider)
+            provider_names = [self.provider.provider]
+            if model_provider_id.is_langgenius():
+                provider_names.append(model_provider_id.provider_name)
 
-        preferred_model_provider = (
-            db.session.query(TenantPreferredModelProvider)
-            .where(
+            stmt = select(TenantPreferredModelProvider).where(
                 TenantPreferredModelProvider.tenant_id == self.tenant_id,
                 TenantPreferredModelProvider.provider_name.in_(provider_names),
             )
-            .first()
-        )
+            preferred_model_provider = s.execute(stmt).scalars().first()
 
-        if preferred_model_provider:
-            preferred_model_provider.preferred_provider_type = provider_type.value
+            if preferred_model_provider:
+                preferred_model_provider.preferred_provider_type = provider_type.value
+            else:
+                preferred_model_provider = TenantPreferredModelProvider(
+                    tenant_id=self.tenant_id,
+                    provider_name=self.provider.provider,
+                    preferred_provider_type=provider_type.value,
+                )
+                session.add(preferred_model_provider)
+            session.commit()
+
+        if session:
+            return _switch(session)
         else:
-            preferred_model_provider = TenantPreferredModelProvider()
-            preferred_model_provider.tenant_id = self.tenant_id
-            preferred_model_provider.provider_name = self.provider.provider
-            preferred_model_provider.preferred_provider_type = provider_type.value
-            db.session.add(preferred_model_provider)
-
-        db.session.commit()
+            with Session(db.engine) as session:
+                return _switch(session)
 
     def extract_secret_variables(self, credential_form_schemas: list[CredentialFormSchema]) -> list[str]:
         """

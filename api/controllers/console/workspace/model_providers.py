@@ -73,7 +73,7 @@ class ModelProviderCredentialApi(Resource):
         model_provider_service = ModelProviderService()
 
         try:
-            model_provider_service.save_provider_credential(
+            model_provider_service.create_provider_credential(
                 tenant_id=current_user.current_tenant_id,
                 provider=provider,
                 credentials=args["credentials"],
@@ -123,7 +123,7 @@ class ModelProviderCredentialApi(Resource):
         args = parser.parse_args()
 
         model_provider_service = ModelProviderService()
-        model_provider_service.remove_provider_credentials(
+        model_provider_service.remove_provider_credential(
             tenant_id=current_user.current_tenant_id, provider=provider, credential_id=args["credential_id"]
         )
 
@@ -142,7 +142,7 @@ class ModelProviderCredentialSwitchApi(Resource):
         args = parser.parse_args()
 
         service = ModelProviderService()
-        service.switch_active_provider_credentials(
+        service.switch_active_provider_credential(
             tenant_id=current_user.current_tenant_id,
             provider=provider,
             credential_id=args["credential_id"],
@@ -167,7 +167,7 @@ class ModelProviderValidateApi(Resource):
         error = ""
 
         try:
-            model_provider_service.provider_credentials_validate(
+            model_provider_service.validate_provider_credentials(
                 tenant_id=tenant_id, provider=provider, credentials=args["credentials"]
             )
         except CredentialsValidateFailedError as ex:

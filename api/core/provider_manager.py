@@ -496,7 +496,8 @@ class ProviderManager:
         Get provider all credentials.
 
         :param tenant_id: workspace id
-        :return: dict mapping provider_name to list of credentials
+        :param provider_name: provider name
+        :return:
         """
         with Session(db.engine, expire_on_commit=False) as session:
             stmt = (
@@ -517,10 +518,13 @@ class ProviderManager:
         tenant_id: str, provider_name: str, model_name: str, model_type: str
     ) -> list[CredentialConfiguration]:
         """
-        Get provider all credentials.
+        Get provider custom model all credentials.
 
         :param tenant_id: workspace id
-        :return: dict mapping provider_name to list of credentials
+        :param provider_name: provider name
+        :param model_name: model name
+        :param model_type: model type
+        :return:
         """
         with Session(db.engine, expire_on_commit=False) as session:
             stmt = (
