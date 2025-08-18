@@ -292,7 +292,13 @@ class ProviderModelCredential(Base):
     __tablename__ = "provider_model_credentials"
     __table_args__ = (
         db.PrimaryKeyConstraint("id", name="provider_model_credential_pkey"),
-        db.Index("provider_model_credential_tenant_provider_model_idx", "tenant_id", "provider_name", "model_name"),
+        db.Index(
+            "provider_model_credential_tenant_provider_model_idx",
+            "tenant_id",
+            "provider_name",
+            "model_name",
+            "model_type",
+        ),
     )
 
     id: Mapped[str] = mapped_column(StringUUID, server_default=text("uuid_generate_v4()"))

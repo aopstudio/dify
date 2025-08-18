@@ -37,7 +37,7 @@ def upgrade():
 
     # Create index for provider_model_credentials
     with op.batch_alter_table('provider_model_credentials', schema=None) as batch_op:
-        batch_op.create_index('provider_model_credential_tenant_provider_model_idx', ['tenant_id', 'provider_name', 'model_name'], unique=False)
+        batch_op.create_index('provider_model_credential_tenant_provider_model_idx', ['tenant_id', 'provider_name', 'model_name', 'model_type'], unique=False)
 
     # Add credential_id to provider_models table
     with op.batch_alter_table('provider_models', schema=None) as batch_op:
