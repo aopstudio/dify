@@ -270,7 +270,7 @@ class ProviderCredential(Base):
 
     __tablename__ = "provider_credentials"
     __table_args__ = (
-        sa.PrimaryKeyConstraint("id", name="provider_credential_pool_pkey"),
+        sa.PrimaryKeyConstraint("id", name="provider_credential_pkey"),
         sa.Index("provider_credential_tenant_provider_idx", "tenant_id", "provider_name"),
     )
 

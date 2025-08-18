@@ -259,7 +259,7 @@ class ModelProviderModelCredentialApi(Resource):
         model_provider_service = ModelProviderService()
 
         try:
-            model_provider_service.save_model_credential(
+            model_provider_service.create_model_credential(
                 tenant_id=tenant_id,
                 provider=provider,
                 model=args["model"],
@@ -459,7 +459,7 @@ class ModelProviderModelValidateApi(Resource):
         error = ""
 
         try:
-            model_provider_service.model_credentials_validate(
+            model_provider_service.validate_model_credentials(
                 tenant_id=tenant_id,
                 provider=provider,
                 model=args["model"],
