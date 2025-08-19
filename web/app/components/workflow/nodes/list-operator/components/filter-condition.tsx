@@ -114,7 +114,13 @@ const FilterCondition: FC<Props> = ({
         />
       )
     }
-    else if (supportVariableInput && !isBoolean) {
+    else if (isBoolean) {
+      inputElement = (<BoolValue
+        value={condition.value as boolean}
+        onChange={handleChange('value')}
+      />)
+    }
+    else if (supportVariableInput) {
       inputElement = (
         <Input
           instanceId='filter-condition-input'
@@ -136,12 +142,6 @@ const FilterCondition: FC<Props> = ({
           placeholderClassName='!leading-[21px]'
         />
       )
-    }
-    else if (isBoolean) {
-      <BoolValue
-                value={condition.value as boolean}
-                onChange={handleChange('value')}
-              />
     }
     else {
       inputElement = (
