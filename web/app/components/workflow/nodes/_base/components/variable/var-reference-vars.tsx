@@ -20,7 +20,9 @@ import { varTypeToStructType } from './utils'
 import type { Field } from '@/app/components/workflow/nodes/llm/types'
 import { FILE_STRUCT } from '@/app/components/workflow/constants'
 import { noop } from 'lodash-es'
+import { CodeAssistant, MagicEdit } from '@/app/components/base/icons/src/vender/line/general'
 import { VariableIconWithColor } from '@/app/components/workflow/nodes/_base/components/variable/variable-label'
+import { Variable02 } from '@/app/components/base/icons/src/vender/solid/development'
 
 type ItemProps = {
   nodeId: string
@@ -60,6 +62,21 @@ const Item: FC<ItemProps> = ({
   const isSys = itemData.variable.startsWith('sys.')
   const isEnv = itemData.variable.startsWith('env.')
   const isChatVar = itemData.variable.startsWith('conversation.')
+  const flatVarIcon = useMemo(() => {
+    if (!isFlat)
+      return null
+    const variable = itemData.variable
+    let Icon
+    switch (variable) {
+      case 'current':
+        Icon = isInCodeGeneratorInstructionEditor ? CodeAssistant : MagicEdit
+        return <Icon className='h-3.5 w-3.5 shrink-0 text-util-colors-violet-violet-600' />
+      case 'error_message':
+        return <Variable02 className='h-3.5 w-3.5 shrink-0 text-util-colors-orange-dark-orange-dark-600' />
+      default:
+        return <Variable02 className='h-3.5 w-3.5 shrink-0 text-text-accent' />
+    }
+  }, [isFlat, isInCodeGeneratorInstructionEditor, itemData.variable])
 
   const varName = useMemo(() => {
     if (!isFlat)
@@ -159,10 +176,12 @@ const Item: FC<ItemProps> = ({
           onMouseDown={e => e.preventDefault()}
         >
           <div className='flex w-0 grow items-center'>
-            <VariableIconWithColor
+            {!isFlat && <VariableIconWithColor
               variableCategory={variableCategory}
               isExceptionVariable={isException}
-            />
+            />}
+            {isFlat && flatVarIcon}
+
             {!isEnv && !isChatVar && (
               <div title={itemData.variable} className='system-sm-medium ml-1 w-0 grow truncate text-text-secondary'>{varName}</div>
             )}
