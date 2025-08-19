@@ -280,18 +280,17 @@ class ProviderConfiguration(BaseModel):
         )
 
     def validate_provider_credentials(
-        self, credentials: dict, session: Session | None = None
-    ) -> tuple[Provider | None, dict]:
+        self, credentials: dict, credential_id: str = "", session: Session | None = None
+    ) -> dict:
         """
         Validate custom credentials.
         :param credentials: provider credentials
+        :param credential_id: (Optional)If provided, can use existing credential's hidden api key to validate
         :param session: optional database session
         :return:
         """
 
         def _validate(s: Session) -> tuple[Provider | None, dict]:
-            provider_record = self._get_provider_record(s)
-
             # Get provider credential secret variables
             provider_credential_secret_variables = self.extract_secret_variables(
                 self.provider.provider_credential_schema.credential_form_schemas
@@ -299,14 +298,20 @@ class ProviderConfiguration(BaseModel):
                 else []
             )
 
-            if provider_record:
+            if credential_id:
                 try:
+                    stmt = select(ProviderCredential).where(
+                        ProviderCredential.tenant_id == self.tenant_id,
+                        ProviderCredential.provider_name == self.provider.provider,
+                        ProviderCredential.id == credential_id,
+                    )
+                    credential_record = s.execute(stmt).scalar_one_or_none()
                     # fix origin data
-                    if provider_record.encrypted_config:
-                        if not provider_record.encrypted_config.startswith("{"):
-                            original_credentials = {"openai_api_key": provider_record.encrypted_config}
+                    if credential_record and credential_record.encrypted_config:
+                        if not credential_record.encrypted_config.startswith("{"):
+                            original_credentials = {"openai_api_key": credential_record.encrypted_config}
                         else:
-                            original_credentials = json.loads(provider_record.encrypted_config)
+                            original_credentials = json.loads(credential_record.encrypted_config)
                     else:
                         original_credentials = {}
                 except JSONDecodeError:
@@ -330,7 +335,7 @@ class ProviderConfiguration(BaseModel):
                 if key in provider_credential_secret_variables:
                     validated_credentials[key] = encrypter.encrypt_token(self.tenant_id, value)
 
-            return provider_record, validated_credentials
+            return validated_credentials
 
         if session:
             return _validate(session)
@@ -349,7 +354,8 @@ class ProviderConfiguration(BaseModel):
             if self._check_provider_credential_name_exists(credential_name=credential_name, session=session):
                 raise ValueError(f"Credential with name '{credential_name}' already exists.")
 
-            provider_record, credentials = self.validate_provider_credentials(credentials=credentials, session=session)
+            credentials = self.validate_provider_credentials(credentials=credentials, session=session)
+            provider_record = self._get_provider_record(session)
             try:
                 new_record = ProviderCredential(
                     tenant_id=self.tenant_id,
@@ -400,26 +406,26 @@ class ProviderConfiguration(BaseModel):
         :return:
         """
         with Session(db.engine) as session:
+            if self._check_provider_credential_name_exists(
+                credential_name=credential_name, session=session, exclude_id=credential_id
+            ):
+                raise ValueError(f"Credential with name '{credential_name}' already exists.")
+
+            credentials = self.validate_provider_credentials(
+                credentials=credentials, credential_id=credential_id, session=session
+            )
+            provider_record = self._get_provider_record(session)
+            stmt = select(ProviderCredential).where(
+                ProviderCredential.id == credential_id,
+                ProviderCredential.tenant_id == self.tenant_id,
+                ProviderCredential.provider_name == self.provider.provider,
+            )
+
+            # Get the credential record to update
+            credential_record = session.execute(stmt).scalar_one_or_none()
+            if not credential_record:
+                raise ValueError("Credential record not found.")
             try:
-                if self._check_provider_credential_name_exists(
-                    credential_name=credential_name, session=session, exclude_id=credential_id
-                ):
-                    raise ValueError(f"Credential with name '{credential_name}' already exists.")
-
-                provider_record, credentials = self.validate_provider_credentials(
-                    credentials=credentials, session=session
-                )
-                stmt = select(ProviderCredential).where(
-                    ProviderCredential.id == credential_id,
-                    ProviderCredential.tenant_id == self.tenant_id,
-                    ProviderCredential.provider_name == self.provider.provider,
-                )
-
-                # Get the credential record to update
-                credential_record = session.execute(stmt).scalar_one_or_none()
-                if not credential_record:
-                    raise ValueError("Credential record not found.")
-
                 # Update credential
                 credential_record.encrypted_config = json.dumps(credentials)
                 credential_record.credential_name = credential_name
@@ -453,7 +459,7 @@ class ProviderConfiguration(BaseModel):
 
         :param credential_id: credential id
         :param credential_record: the encrypted_config and credential_name
-        :param credential_source: the credential comes from the provider_credential(`provider`) 
+        :param credential_source: the credential comes from the provider_credential(`provider`)
             or the provider_model_credential(`custom_model`)
         :param session: the database session
         :return:
@@ -718,7 +724,12 @@ class ProviderConfiguration(BaseModel):
                 )
 
     def validate_custom_model_credentials(
-        self, model_type: ModelType, model: str, credentials: dict, session: Session | None = None
+        self,
+        model_type: ModelType,
+        model: str,
+        credentials: dict,
+        credential_id: str = "",
+        session: Session | None = None,
     ) -> tuple[ProviderModel | None, dict]:
         """
         Validate custom model credentials.
@@ -726,13 +737,11 @@ class ProviderConfiguration(BaseModel):
         :param model_type: model type
         :param model: model name
         :param credentials: model credentials dict
+        :param credential_id: (Optional)If provided, can use existing credential's hidden api key to validate
         :return:
         """
 
         def _validate(s: Session) -> tuple[ProviderModel | None, dict]:
-            # get provider model
-            provider_model_record = self._get_custom_model_record(model_type=model_type, model=model, session=s)
-
             # Get provider credential secret variables
             provider_credential_secret_variables = self.extract_secret_variables(
                 self.provider.model_credential_schema.credential_form_schemas
@@ -740,11 +749,19 @@ class ProviderConfiguration(BaseModel):
                 else []
             )
 
-            if provider_model_record:
+            if credential_id:
                 try:
+                    stmt = select(ProviderModelCredential).where(
+                        ProviderModelCredential.id == credential_id,
+                        ProviderModelCredential.tenant_id == self.tenant_id,
+                        ProviderModelCredential.provider_name == self.provider.provider,
+                        ProviderModelCredential.model_name == model,
+                        ProviderModelCredential.model_type == model_type.to_origin_model_type(),
+                    )
+                    credential_record = s.execute(stmt).scalar_one_or_none()
                     original_credentials = (
-                        json.loads(provider_model_record.encrypted_config)
-                        if provider_model_record.encrypted_config
+                        json.loads(credential_record.encrypted_config)
+                        if credential_record and credential_record.encrypted_config
                         else {}
                     )
                 except JSONDecodeError:
@@ -768,7 +785,7 @@ class ProviderConfiguration(BaseModel):
                 if key in provider_credential_secret_variables:
                     validated_credentials[key] = encrypter.encrypt_token(self.tenant_id, value)
 
-            return provider_model_record, validated_credentials
+            return validated_credentials
 
         if session:
             return _validate(session)
@@ -793,9 +810,10 @@ class ProviderConfiguration(BaseModel):
             ):
                 raise ValueError(f"Model credential with name '{credential_name}' already exists for {model}.")
             # validate custom model config
-            provider_model_record, credentials = self.validate_custom_model_credentials(
+            credentials = self.validate_custom_model_credentials(
                 model_type=model_type, model=model, credentials=credentials, session=session
             )
+            provider_model_record = self._get_custom_model_record(model_type=model_type, model=model, session=session)
 
             try:
                 credential = ProviderModelCredential(
@@ -856,9 +874,14 @@ class ProviderConfiguration(BaseModel):
             ):
                 raise ValueError(f"Model credential with name '{credential_name}' already exists for {model}.")
             # validate custom model config
-            provider_model_record, credentials = self.validate_custom_model_credentials(
-                model_type=model_type, model=model, credentials=credentials, session=session
+            credentials = self.validate_custom_model_credentials(
+                model_type=model_type,
+                model=model,
+                credentials=credentials,
+                credential_id=credential_id,
+                session=session,
             )
+            provider_model_record = self._get_custom_model_record(model_type=model_type, model=model, session=session)
 
             stmt = select(ProviderModelCredential).where(
                 ProviderModelCredential.id == credential_id,
