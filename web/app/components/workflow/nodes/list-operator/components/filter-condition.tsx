@@ -30,7 +30,6 @@ const VAR_INPUT_SUPPORTED_KEYS: Record<string, VarType> = {
 type Props = {
   condition: Condition
   onChange: (condition: Condition) => void
-  varType: VarType
   hasSubVariable: boolean
   readOnly: boolean
   nodeId: string
