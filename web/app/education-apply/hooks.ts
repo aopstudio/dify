@@ -71,11 +71,7 @@ type useEducationReverifyNoticeParams = {
 }
 
 const isExpired = (expireAt?: number, timezone?: string) => {
-<<<<<<< HEAD
-  if(!expireAt || !timezone)
-=======
   if (!expireAt || !timezone)
->>>>>>> feat/model-credentials
     return false
   const today = dayjs().tz(timezone).startOf('day')
   const expiredDay = dayjs.unix(expireAt).tz(timezone).startOf('day')
@@ -100,48 +96,27 @@ const useEducationReverifyNotice = ({
   })
 
   useEffect(() => {
-<<<<<<< HEAD
-    if(isLoading || !timezone)
-      return
-    if(allowRefreshEducationVerify) {
-        const expired = isExpired(educationAccountExpireAt!, timezone)
-        const isExpireAtChanged = prevExpireAt !== educationAccountExpireAt
-        if(isExpireAtChanged) {
-=======
     if (isLoading || !timezone)
       return
     if (allowRefreshEducationVerify) {
         const expired = isExpired(educationAccountExpireAt!, timezone)
         const isExpireAtChanged = prevExpireAt !== educationAccountExpireAt
         if (isExpireAtChanged) {
->>>>>>> feat/model-credentials
           setPrevExpireAt(educationAccountExpireAt!)
           setReverifyHasNoticed(false)
           setExpiredHasNoticed(false)
         }
         const shouldNotice = (() => {
-<<<<<<< HEAD
-          if(isExpireAtChanged)
-            return true
-          return expired ? !expiredHasNoticed : !reverifyHasNoticed
-        })()
-        if(shouldNotice) {
-=======
           if (isExpireAtChanged)
             return true
           return expired ? !expiredHasNoticed : !reverifyHasNoticed
         })()
         if (shouldNotice) {
->>>>>>> feat/model-credentials
           onNotice({
             expireAt: educationAccountExpireAt!,
             expired,
           })
-<<<<<<< HEAD
-          if(expired)
-=======
           if (expired)
->>>>>>> feat/model-credentials
             setExpiredHasNoticed(true)
           else
             setReverifyHasNoticed(true)
@@ -174,11 +149,7 @@ export const useEducationInit = () => {
   const { mutateAsync } = useEducationVerify()
   const handleVerify = async () => {
     const { token } = await mutateAsync()
-<<<<<<< HEAD
-    if(token)
-=======
     if (token)
->>>>>>> feat/model-credentials
       router.push(`/education-apply?token=${token}`)
   }
 
@@ -189,15 +160,9 @@ export const useEducationInit = () => {
       if (educationVerifyAction === EDUCATION_VERIFY_URL_SEARCHPARAMS_ACTION)
         localStorage.setItem(EDUCATION_VERIFYING_LOCALSTORAGE_ITEM, 'yes')
     }
-<<<<<<< HEAD
-    if(educationVerifyAction === EDUCATION_PRICING_SHOW_ACTION)
-      setShowPricingModal()
-    if(educationVerifyAction === EDUCATION_RE_VERIFY_ACTION)
-=======
     if (educationVerifyAction === EDUCATION_PRICING_SHOW_ACTION)
       setShowPricingModal()
     if (educationVerifyAction === EDUCATION_RE_VERIFY_ACTION)
->>>>>>> feat/model-credentials
       handleVerify()
   }, [setShowAccountSettingModal, educationVerifying, educationVerifyAction])
 }
