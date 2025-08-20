@@ -148,6 +148,13 @@ class InstructionGenerateApi(Resource):
             if args["language"] == "javascript"
             else ""
         )
+        code_template = (
+            Python3CodeProvider.get_default_code()
+            if args["language"] == "python"
+            else (JavascriptCodeProvider.get_default_code())
+            if args["language"] == "javascript"
+            else ""
+        )
         try:
             # Generate from nothing for a workflow node
             if args["current"] == "" and args["node_id"] != "":
