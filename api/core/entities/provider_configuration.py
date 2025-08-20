@@ -6,41 +6,32 @@ from collections.abc import Iterator, Sequence
 from json import JSONDecodeError
 from typing import Optional
 
+from constants import HIDDEN_VALUE
+from core.entities.model_entities import (ModelStatus, ModelWithProviderEntity,
+                                          SimpleModelProviderEntity)
+from core.entities.provider_entities import (CustomConfiguration,
+                                             ModelSettings,
+                                             SystemConfiguration,
+                                             SystemConfigurationStatus)
+from core.helper import encrypter
+from core.helper.model_provider_cache import (ProviderCredentialsCache,
+                                              ProviderCredentialsCacheType)
+from core.model_runtime.entities.model_entities import (AIModelEntity,
+                                                        FetchFrom, ModelType)
+from core.model_runtime.entities.provider_entities import (
+    ConfigurateMethod, CredentialFormSchema, FormType, ProviderEntity)
+from core.model_runtime.model_providers.__base.ai_model import AIModel
+from core.model_runtime.model_providers.model_provider_factory import \
+    ModelProviderFactory
+from core.plugin.entities.plugin import ModelProviderID
+from extensions.ext_database import db
+from models.provider import (LoadBalancingModelConfig, Provider,
+                             ProviderCredential, ProviderModel,
+                             ProviderModelCredential, ProviderModelSetting,
+                             ProviderType, TenantPreferredModelProvider)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
-from constants import HIDDEN_VALUE
-from core.entities.model_entities import ModelStatus, ModelWithProviderEntity, SimpleModelProviderEntity
-from core.entities.provider_entities import (
-    CustomConfiguration,
-    ModelSettings,
-    SystemConfiguration,
-    SystemConfigurationStatus,
-)
-from core.helper import encrypter
-from core.helper.model_provider_cache import ProviderCredentialsCache, ProviderCredentialsCacheType
-from core.model_runtime.entities.model_entities import AIModelEntity, FetchFrom, ModelType
-from core.model_runtime.entities.provider_entities import (
-    ConfigurateMethod,
-    CredentialFormSchema,
-    FormType,
-    ProviderEntity,
-)
-from core.model_runtime.model_providers.__base.ai_model import AIModel
-from core.model_runtime.model_providers.model_provider_factory import ModelProviderFactory
-from core.plugin.entities.plugin import ModelProviderID
-from extensions.ext_database import db
-from models.provider import (
-    LoadBalancingModelConfig,
-    Provider,
-    ProviderCredential,
-    ProviderModel,
-    ProviderModelCredential,
-    ProviderModelSetting,
-    ProviderType,
-    TenantPreferredModelProvider,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -553,8 +544,16 @@ class ProviderConfiguration(BaseModel):
                 session.delete(credential_record)
 
                 if provider_record and available_credentials_count <= 1:
-                    # If all credentials are deleted, delete the provider record, switch to system provider type
+                    # If all credentials are deleted, delete the provider record
                     session.delete(provider_record)
+
+                    provider_model_credentials_cache = ProviderCredentialsCache(
+                        tenant_id=self.tenant_id,
+                        identity_id=provider_record.id,
+                        cache_type=ProviderCredentialsCacheType.PROVIDER,
+                    )
+                    provider_model_credentials_cache.delete()
+                    self.switch_preferred_provider_type(provider_type=ProviderType.SYSTEM, session=session)
                 elif provider_record and provider_record.credential_id == credential_id:
                     provider_record.credential_id = None
                     provider_record.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
@@ -1272,7 +1271,7 @@ class ProviderConfiguration(BaseModel):
         # Get model instance of LLM
         return model_provider_factory.get_model_type_instance(provider=self.provider.provider, model_type=model_type)
 
-    def get_model_schema(self, model_type: ModelType, model: str, credentials: dict) -> AIModelEntity | None:
+    def get_model_schema(self, model_type: ModelType, model: str, credentials: dict | None) -> AIModelEntity | None:
         """
         Get model schema
         """
@@ -1591,10 +1590,16 @@ class ProviderConfiguration(BaseModel):
                     if model_setting.enabled is False:
                         status = ModelStatus.DISABLED
 
-                    if len(model_setting.load_balancing_configs) > 1:
+                    provider_model_lb_configs = [
+                        config
+                        for config in model_setting.load_balancing_configs
+                        if config.credential_source_type != "custom_model"
+                    ]
+
+                    if len(provider_model_lb_configs) > 1:
                         load_balancing_enabled = True
 
-                    if model_setting.has_invalid_load_balancing_configs:
+                    if any(config.name == "__delete__" for config in provider_model_lb_configs):
                         has_invalid_load_balancing_configs = True
 
                 provider_models.append(
@@ -1634,6 +1639,7 @@ class ProviderConfiguration(BaseModel):
 
             status = ModelStatus.ACTIVE
             load_balancing_enabled = False
+            has_invalid_load_balancing_configs = False
             if (
                 custom_model_schema.model_type in model_setting_map
                 and custom_model_schema.model in model_setting_map[custom_model_schema.model_type]
@@ -1642,7 +1648,13 @@ class ProviderConfiguration(BaseModel):
                 if model_setting.enabled is False:
                     status = ModelStatus.DISABLED
 
-                if len(model_setting.load_balancing_configs) > 1:
+                custom_model_lb_configs = [
+                    config
+                    for config in model_setting.load_balancing_configs
+                    if config.credential_source_type != "provider"
+                ]
+
+                if len(custom_model_lb_configs) > 1:
                     load_balancing_enabled = True
 
             if len(model_configuration.available_model_credentials) > 0 and not model_configuration.credentials:
@@ -1660,6 +1672,7 @@ class ProviderConfiguration(BaseModel):
                     provider=SimpleModelProviderEntity(self.provider),
                     status=status,
                     load_balancing_enabled=load_balancing_enabled,
+                    has_invalid_load_balancing_configs=has_invalid_load_balancing_configs,
                 )
             )
 
