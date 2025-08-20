@@ -382,9 +382,6 @@ export const ModalContextProvider = ({
             <ExpireNoticeModal
               {...showEducationExpireNoticeModal.payload}
               onClose={() => setShowEducationExpireNoticeModal(null)}
-              onConfirm={() => {
-                setShowEducationExpireNoticeModal(null)
-              }}
             />
           )}
       </>
