@@ -70,11 +70,13 @@ def upgrade():
                 models.types.StringUUID(),
                 nullable=True,
                 comment="Reference to WorkflowDraftVariableFile if variable is offloaded to external storage",
-            ),
+            )
+        )
+        batch_op.add_column(
             sa.Column(
                 "is_default_value",
                 sa.Boolean,
-                nullable=False
+                nullable=False,
                 server_default=sa.false(),
             )
         )
