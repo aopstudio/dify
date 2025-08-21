@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.expression import and_, or_
 from sympy import false
 
+from configs import dify_config
 from core.app.entities.app_invoke_entities import InvokeFrom
 from core.file.models import File
 from core.variables import Segment, StringSegment, Variable
@@ -915,7 +916,11 @@ class DraftVariableSaver:
         # synchronized with it.
         # Ideally, these should be co-located for better maintainability.
         # However, due to the current code structure, this is not straightforward.
-        truncator = VariableTruncator()
+        truncator = VariableTruncator(
+            max_size_bytes=dify_config.WORKFLOW_VARIABLE_TRUNCATION_MAX_SIZE,
+            array_element_limit=dify_config.WORKFLOW_VARIABLE_TRUNCATION_ARRAY_LENGTH,
+            string_length_limit=dify_config.WORKFLOW_VARIABLE_TRUNCATION_STRING_LENGTH,
+        )
         truncation_result = truncator.truncate(value_seg)
         if not truncation_result.truncated:
             return None
