@@ -3,12 +3,13 @@ import logging
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import Enum, StrEnum
+import select
 from typing import TYPE_CHECKING, Any, Optional, Union
 from uuid import uuid4
 
 import sqlalchemy as sa
 from flask_login import current_user
-from sqlalchemy import DateTime, orm
+from sqlalchemy import DateTime, Select, orm
 
 from core.file.constants import maybe_file_object
 from core.file.models import File
@@ -16,6 +17,7 @@ from core.variables import utils as variable_utils
 from core.variables.variables import FloatVariable, IntegerVariable, StringVariable
 from core.workflow.constants import CONVERSATION_VARIABLE_NODE_ID, SYSTEM_VARIABLE_NODE_ID
 from core.workflow.nodes.enums import NodeType
+from extensions.ext_storage import Storage
 from factories.variable_factory import TypeMismatchError, build_segment_with_type
 from libs.datetime_utils import naive_utc_now
 from libs.helper import extract_tenant_id
@@ -613,7 +615,7 @@ class WorkflowNodeExecutionTriggeredFrom(StrEnum):
     WORKFLOW_RUN = "workflow-run"
 
 
-class WorkflowNodeExecutionModel(Base):
+class WorkflowNodeExecutionModel(Base):  # This model is expected to have `offload_data` preloaded in most cases.
     """
     Workflow Node Execution
 
@@ -729,6 +731,33 @@ class WorkflowNodeExecutionModel(Base):
     created_by: Mapped[str] = mapped_column(StringUUID)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
+    offload_data: Mapped[Optional["WorkflowNodeExecutionOffload"]] = orm.relationship(
+        "WorkflowNodeExecutionOffload",
+        primaryjoin="WorkflowNodeExecutionModel.id == foreign(WorkflowNodeExecutionOffload.node_execution_id)",
+        uselist=False,
+        lazy="raise",
+        back_populates="execution",
+    )
+
+    @staticmethod
+    def preload_offload_data(
+        query: Select[tuple["WorkflowNodeExecutionModel"]] | orm.Query["WorkflowNodeExecutionModel"],
+    ):
+        return query.options(orm.selectinload(WorkflowNodeExecutionModel.offload_data))
+
+    @staticmethod
+    def preload_offload_data_and_files(
+        query: Select[tuple["WorkflowNodeExecutionModel"]] | orm.Query["WorkflowNodeExecutionModel"],
+    ):
+        return query.options(
+            orm.selectinload(WorkflowNodeExecutionModel.offload_data).options(
+                # Using `joinedload` instead of `selectinload` to minimize database roundtrips,
+                # as `selectinload` would require separate queries for `inputs_file` and `outputs_file`.
+                orm.joinedload(WorkflowNodeExecutionOffload.inputs_file),
+                orm.joinedload(WorkflowNodeExecutionOffload.outputs_file),
+            )
+        )
+
     @property
     def created_by_account(self):
         created_by_role = CreatorUserRole(self.created_by_role)
@@ -779,6 +808,111 @@ class WorkflowNodeExecutionModel(Base):
                 )
 
         return extras
+
+    @property
+    def inputs_truncated(self) -> bool:
+        """Check if inputs were truncated (offloaded to external storage)."""
+        return self.offload_data is not None and self.offload_data.inputs_file_id is not None
+
+    @property
+    def outputs_truncated(self) -> bool:
+        """Check if outputs were truncated (offloaded to external storage)."""
+        return self.offload_data is not None and self.offload_data.outputs_file_id is not None
+
+    @staticmethod
+    def _load_full_content(session: orm.Session, file_id: str, storage: Storage):
+        stmt = sa.select(UploadFile).where(UploadFile.id == file_id)
+        file = session.scalars(stmt).first()
+        assert file is not None, f"UploadFile with id {file_id} should exist but not"
+        content = storage.load(file_id)
+        return json.loads(content)
+
+    def load_full_inputs(self, session: orm.Session, storage: Storage) -> Mapping[str, Any] | None:
+        if self.offload_data is None:
+            return self.inputs_dict
+
+        offload_data = self.offload_data
+        if offload_data.inputs_file_id is None:
+            return self.inputs_dict
+
+        return self._load_full_content(session, offload_data.inputs_file_id, storage)
+
+    def load_full_outputs(self, session: orm.Session, storage: Storage) -> Mapping[str, Any] | None:
+        if self.offload_data is None:
+            return self.outputs_dict
+
+        offload_data = self.offload_data
+        if offload_data.outputs_file_id is None:
+            return self.outputs_dict
+
+        return self._load_full_content(session, offload_data.outputs_file_id, storage)
+
+
+class WorkflowNodeExecutionOffload(Base):
+    __tablename__ = "workflow_node_execution_offload"
+    __table_args__ = (UniqueConstraint("node_execution_id"),)
+
+    id: Mapped[str] = mapped_column(
+        StringUUID,
+        primary_key=True,
+        server_default=sa.text("uuidv7()"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=naive_utc_now, server_default=func.current_timestamp()
+    )
+
+    tenant_id: Mapped[str] = mapped_column(StringUUID)
+    app_id: Mapped[str] = mapped_column(StringUUID)
+
+    node_execution_id: Mapped[str] = mapped_column(StringUUID, nullable=False)
+
+    # Design Decision: Combining inputs and outputs into a single object was considered to reduce I/O
+    # operations. However, due to the current design of `WorkflowNodeExecutionRepository`,
+    # the `save` method is called at two distinct times:
+    #
+    # - When the node starts execution: the `inputs` field exists, but the `outputs` field is absent
+    # - When the node completes execution (either succeeded or failed): the `outputs` field becomes available
+    #
+    # It's difficult to correlate these two successive calls to `save` for combined storage.
+    # Converting the `WorkflowNodeExecutionRepository` to buffer the first `save` call and flush
+    # when execution completes was also considered, but this would make the execution state unobservable
+    # until completion, significantly damaging the observability of workflow execution.
+    #
+    # Given these constraints, `inputs` and `outputs` are stored separately to maintain real-time
+    # observability and system reliability.
+
+    # At least one of `inputs_file_id` or `outputs_file_id` must be non-NULL.
+
+    # `inputs_file_id` references to the offloaded storage object containing the node's input data.
+    # NULL if inputs are stored directly in the database (not offloaded).
+    inputs_file_id: Mapped[str] = mapped_column(StringUUID, nullable=True)
+
+    # `outputs_file_id` references to the offloaded storage object containing the node's output data.
+    # NULL if outputs are stored directly in the database (not offloaded).
+    outputs_file_id: Mapped[str] = mapped_column(StringUUID, nullable=True)
+
+    execution: Mapped[WorkflowNodeExecutionModel] = orm.relationship(
+        foreign_keys=[node_execution_id],
+        lazy="raise",
+        uselist=False,
+        primaryjoin="WorkflowNodeExecutionOffload.node_execution_id == WorkflowNodeExecutionModel.id",
+        back_populates="offload_data",
+    )
+
+    inputs_file: Mapped[Optional["UploadFile"]] = orm.relationship(
+        foreign_keys=[inputs_file_id],
+        lazy="raise",
+        uselist=False,
+        primaryjoin="WorkflowNodeExecutionOffload.inputs_file_id == UploadFile.id",
+    )
+
+    outputs_file: Mapped[Optional["UploadFile"]] = orm.relationship(
+        foreign_keys=[outputs_file_id],
+        lazy="raise",
+        uselist=False,
+        primaryjoin="WorkflowNodeExecutionOffload.outputs_file_id == UploadFile.id",
+    )
 
 
 class WorkflowAppLogCreatedFrom(Enum):

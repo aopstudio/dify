@@ -89,6 +89,7 @@ from .workflow import (
     WorkflowNodeExecutionTriggeredFrom,
     WorkflowRun,
     WorkflowType,
+    WorkflowNodeExecutionOffload,
 )
 
 __all__ = [
@@ -172,6 +173,7 @@ __all__ = [
     "WorkflowAppLog",
     "WorkflowAppLogCreatedFrom",
     "WorkflowNodeExecutionModel",
+    "WorkflowNodeExecutionOffload",
     "WorkflowNodeExecutionTriggeredFrom",
     "WorkflowRun",
     "WorkflowRunTriggeredFrom",

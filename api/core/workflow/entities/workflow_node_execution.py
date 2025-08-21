@@ -7,13 +7,16 @@ and don't contain implementation details like tenant_id, app_id, etc.
 """
 
 from collections.abc import Mapping
+import dataclasses
 from datetime import datetime
 from enum import StrEnum
+from tkinter import Variable
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from core.workflow.nodes.enums import NodeType
+from services.variable_truncator import VariableTruncator
 
 
 class WorkflowNodeExecutionMetadataKey(StrEnum):
@@ -90,6 +93,7 @@ class WorkflowNodeExecution(BaseModel):
     title: str  # Display title of the node
 
     # Execution data
+    # The `inputs` and `outputs` fields hold the full content
     inputs: Optional[Mapping[str, Any]] = None  # Input variables used by this node
     process_data: Optional[Mapping[str, Any]] = None  # Intermediate processing data
     outputs: Optional[Mapping[str, Any]] = None  # Output variables produced by this node
@@ -105,6 +109,33 @@ class WorkflowNodeExecution(BaseModel):
     # Timing information
     created_at: datetime  # When execution started
     finished_at: Optional[datetime] = None  # When execution completed
+
+    _truncated_inputs: Mapping[str, Any] | None = PrivateAttr(None)
+    _truncated_outputs: Mapping[str, Any] | None = PrivateAttr(None)
+
+    def get_truncated_inputs(self) -> Mapping[str, Any] | None:
+        return self._truncated_inputs
+
+    def get_truncated_outputs(self) -> Mapping[str, Any] | None:
+        return self._truncated_outputs
+
+    def set_truncated_inputs(self, truncated_inputs: Mapping[str, Any] | None):
+        self._truncated_inputs = truncated_inputs
+
+    def set_truncated_outputs(self, truncated_outputs: Mapping[str, Any] | None):
+        self._truncated_outputs = truncated_outputs
+
+    def get_response_inputs(self) -> Mapping[str, Any] | None:
+        inputs = self.get_truncated_inputs()
+        if inputs:
+            return inputs
+        return self.inputs
+
+    def get_response_outputs(self) -> Mapping[str, Any] | None:
+        outputs = self.get_truncated_outputs()
+        if outputs:
+            return outputs
+        return self.outputs
 
     def update_from_mapping(
         self,

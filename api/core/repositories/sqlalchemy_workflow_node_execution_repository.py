@@ -2,15 +2,18 @@
 SQLAlchemy implementation of the WorkflowNodeExecutionRepository.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+import dataclasses
 import json
 import logging
-from collections.abc import Sequence
-from typing import Optional, Union
+from collections.abc import Mapping, Sequence
+from typing import Any, Optional, Union
 
 from sqlalchemy import UnaryExpression, asc, desc, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
+from configs import dify_config
 from core.model_runtime.utils.encoders import jsonable_encoder
 from core.workflow.entities.workflow_node_execution import (
     WorkflowNodeExecution,
@@ -20,7 +23,9 @@ from core.workflow.entities.workflow_node_execution import (
 from core.workflow.nodes.enums import NodeType
 from core.workflow.repositories.workflow_node_execution_repository import OrderConfig, WorkflowNodeExecutionRepository
 from core.workflow.workflow_type_encoder import WorkflowRuntimeTypeConverter
+from extensions.ext_storage import storage
 from libs.helper import extract_tenant_id
+from libs.uuid_utils import uuidv7
 from models import (
     Account,
     CreatorUserRole,
@@ -28,8 +33,18 @@ from models import (
     WorkflowNodeExecutionModel,
     WorkflowNodeExecutionTriggeredFrom,
 )
+from models.model import UploadFile
+from models.workflow import WorkflowNodeExecutionOffload
+from services.file_service import FileService
+from services.variable_truncator import MaxDepthExceededError, VariableTruncator
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class _InputsOutputsTruncationResult:
+    truncated_value: Mapping[str, Any]
+    file: UploadFile
 
 
 class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository):
@@ -48,7 +63,7 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         self,
         session_factory: sessionmaker | Engine,
         user: Union[Account, EndUser],
-        app_id: Optional[str],
+        app_id: str,
         triggered_from: Optional[WorkflowNodeExecutionTriggeredFrom],
     ):
         """
@@ -82,6 +97,7 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         # Extract user context
         self._triggered_from = triggered_from
         self._creator_user_id = user.id
+        self._user = user  # Store the user object directly
 
         # Determine user role based on user type
         self._creator_user_role = CreatorUserRole.ACCOUNT if isinstance(user, Account) else CreatorUserRole.END_USER
@@ -90,17 +106,30 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         # Key: node_execution_id, Value: WorkflowNodeExecution (DB model)
         self._node_execution_cache: dict[str, WorkflowNodeExecutionModel] = {}
 
+        # Initialize FileService for handling offloaded data
+        self._file_service = FileService(session_factory)
+
+    def _create_truncator(self) -> VariableTruncator:
+        return VariableTruncator(
+            max_size_bytes=dify_config.WORKFLOW_VARIABLE_TRUNCATION_MAX_SIZE,
+            array_element_limit=dify_config.WORKFLOW_VARIABLE_TRUNCATION_ARRAY_LENGTH,
+            string_length_limit=dify_config.WORKFLOW_VARIABLE_TRUNCATION_STRING_LENGTH,
+        )
+
     def _to_domain_model(self, db_model: WorkflowNodeExecutionModel) -> WorkflowNodeExecution:
         """
         Convert a database model to a domain model.
 
+        This requires the offload_data, and correspond inputs_file and outputs_file are preloaded.
+
         Args:
-            db_model: The database model to convert
+            db_model: The database model to convert. It must have `offload_data`
+                  and the corresponding `inputs_file` and `outputs_file` preloaded.
 
         Returns:
             The domain model
         """
-        # Parse JSON fields
+        # Parse JSON fields - these might be truncated versions
         inputs = db_model.inputs_dict
         process_data = db_model.process_data_dict
         outputs = db_model.outputs_dict
@@ -109,7 +138,7 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         # Convert status to domain enum
         status = WorkflowNodeExecutionStatus(db_model.status)
 
-        return WorkflowNodeExecution(
+        domain_model = WorkflowNodeExecution(
             id=db_model.id,
             node_execution_id=db_model.node_execution_id,
             workflow_id=db_model.workflow_id,
@@ -130,7 +159,32 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
             finished_at=db_model.finished_at,
         )
 
-    def to_db_model(self, domain_model: WorkflowNodeExecution) -> WorkflowNodeExecutionModel:
+        if not db_model.offload_data:
+            return domain_model
+
+        offload_data = db_model.offload_data
+        # Store truncated versions for API responses
+        if offload_data.inputs_file_id:
+            assert offload_data.inputs_file is not None
+            domain_model.inputs = self._load_file(offload_data.inputs_file)
+            domain_model.set_truncated_inputs(inputs)
+        if db_model.offload_data.outputs_file_id:
+            assert offload_data.outputs_file is not None
+            domain_model.outputs = self._load_file(offload_data.outputs_file)
+            domain_model.set_truncated_outputs(outputs)
+
+        return domain_model
+
+    def _load_file(self, file: UploadFile) -> Mapping[str, Any]:
+        content = storage.load(file.key)
+        return json.loads(content)
+
+    @staticmethod
+    def _json_encode(values: Mapping[str, Any]) -> str:
+        json_converter = WorkflowRuntimeTypeConverter()
+        return json.dumps(json_converter.to_json_encodable(values))
+
+    def _to_db_model(self, domain_model: WorkflowNodeExecution) -> WorkflowNodeExecutionModel:
         """
         Convert a domain model to a database model.
 
@@ -138,7 +192,7 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
             domain_model: The domain model to convert
 
         Returns:
-            The database model
+            The database model, without setting inputs, process_data and outputs fields.
         """
         # Use values from constructor if provided
         if not self._triggered_from:
@@ -148,7 +202,7 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         if not self._creator_user_role:
             raise ValueError("created_by_role is required in repository constructor")
 
-        json_converter = WorkflowRuntimeTypeConverter()
+        # json_converter = WorkflowRuntimeTypeConverter()
         db_model = WorkflowNodeExecutionModel()
         db_model.id = domain_model.id
         db_model.tenant_id = self._tenant_id
@@ -163,17 +217,8 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         db_model.node_id = domain_model.node_id
         db_model.node_type = domain_model.node_type
         db_model.title = domain_model.title
-        db_model.inputs = (
-            json.dumps(json_converter.to_json_encodable(domain_model.inputs)) if domain_model.inputs else None
-        )
-        db_model.process_data = (
-            json.dumps(json_converter.to_json_encodable(domain_model.process_data))
-            if domain_model.process_data
-            else None
-        )
-        db_model.outputs = (
-            json.dumps(json_converter.to_json_encodable(domain_model.outputs)) if domain_model.outputs else None
-        )
+        # inputs and outputs are handled below
+        db_model.process_data = self._json_encode(domain_model.process_data) if domain_model.process_data else None
         db_model.status = domain_model.status
         db_model.error = domain_model.error
         db_model.elapsed_time = domain_model.elapsed_time
@@ -184,7 +229,64 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         db_model.created_by_role = self._creator_user_role
         db_model.created_by = self._creator_user_id
         db_model.finished_at = domain_model.finished_at
+
+        offload_data = WorkflowNodeExecutionOffload(
+            id=uuidv7(),
+            tenant_id=self._tenant_id,
+            app_id=self._app_id,
+        )
+
+        if domain_model.inputs is not None:
+            result = self._truncate_and_upload(
+                domain_model.inputs,
+                domain_model.id,
+                "_inputs",
+            )
+            if result is not None:
+                db_model.inputs = self._json_encode(result.truncated_value)
+                domain_model.set_truncated_inputs(result.truncated_value)
+            else:
+                db_model.inputs = self._json_encode(domain_model.inputs)
+
+        if domain_model.outputs is not None:
+            result = self._truncate_and_upload(
+                domain_model.outputs,
+                domain_model.id,
+                "_outputs",
+            )
+            if result is not None:
+                db_model.outputs = self._json_encode(result.truncated_value)
+                domain_model.set_truncated_outputs(result.truncated_value)
+            else:
+                db_model.outputs = self._json_encode(domain_model.outputs)
+
+        if any([offload_data.inputs_file, offload_data.outputs_file]):
+            db_model.offload_data = offload_data
         return db_model
+
+    def _truncate_and_upload(
+        self, values: Mapping[str, Any] | None, execution_id: str, suffix: str
+    ) -> _InputsOutputsTruncationResult | None:
+        if values is None:
+            return None
+
+        truncator = self._create_truncator()
+        truncated_values, truncated = truncator.truncate_inputs_outputs(values)
+        if not truncated:
+            return None
+
+        value_json = self._json_encode(values)
+        assert value_json is not None, "value_json should be None here."
+        upload_file = self._file_service.upload_file(
+            filename=f"node_execution_{execution_id}{suffix}.json",
+            content=value_json.encode("utf-8"),
+            mimetype="application/json",
+            user=self._user,
+        )
+        return _InputsOutputsTruncationResult(
+            truncated_value=truncated_values,
+            file=upload_file,
+        )
 
     def save(self, execution: WorkflowNodeExecution) -> None:
         """
@@ -192,9 +294,10 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
 
         This method serves as a domain-to-database adapter that:
         1. Converts the domain entity to its database representation
-        2. Persists the database model using SQLAlchemy's merge operation
-        3. Maintains proper multi-tenancy by including tenant context during conversion
-        4. Updates the in-memory cache for faster subsequent lookups
+        2. Handles truncation and offloading of large inputs/outputs
+        3. Persists the database model using SQLAlchemy's merge operation
+        4. Maintains proper multi-tenancy by including tenant context during conversion
+        5. Updates the in-memory cache for faster subsequent lookups
 
         The method handles both creating new records and updating existing ones through
         SQLAlchemy's merge operation.
@@ -202,8 +305,20 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         Args:
             execution: The NodeExecution domain entity to persist
         """
+        # NOTE: As per the implementation of `WorkflowCycleManager`,
+        # the `save` method is invoked multiple times during the node's execution lifecycle, including:
+        #
+        # - When the node starts execution
+        # - When the node retries execution
+        # - When the node completes execution (either successfully or with failure)
+        #
+        # Only the final invocation will have `inputs` and `outputs` populated.
+        #
+        # This simplifies the logic for saving offloaded variables but introduces a tight coupling
+        # between this module and `WorkflowCycleManager`.
+
         # Convert domain model to database model using tenant context and other attributes
-        db_model = self.to_db_model(execution)
+        db_model = self._to_db_model(execution)
 
         # Create a new database session
         with self._session_factory() as session:
@@ -226,6 +341,9 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         """
         Retrieve all WorkflowNodeExecution database models for a specific workflow run.
 
+        The returned models have `offload_data` preloaded, along with the associated
+        `inputs_file` and `outputs_file` data.
+
         This method directly returns database models without converting to domain models,
         which is useful when you need to access database-specific fields like triggered_from.
         It also updates the in-memory cache with the retrieved models.
@@ -240,7 +358,8 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
             A list of WorkflowNodeExecution database models
         """
         with self._session_factory() as session:
-            stmt = select(WorkflowNodeExecutionModel).where(
+            stmt = WorkflowNodeExecutionModel.preload_offload_data_and_files(select(WorkflowNodeExecutionModel))
+            stmt = stmt.where(
                 WorkflowNodeExecutionModel.workflow_run_id == workflow_run_id,
                 WorkflowNodeExecutionModel.tenant_id == self._tenant_id,
                 WorkflowNodeExecutionModel.triggered_from == WorkflowNodeExecutionTriggeredFrom.WORKFLOW_RUN,
@@ -296,10 +415,7 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         # Get the database models using the new method
         db_models = self.get_db_models_by_workflow_run(workflow_run_id, order_config)
 
-        # Convert database models to domain models
-        domain_models = []
-        for model in db_models:
-            domain_model = self._to_domain_model(model)
-            domain_models.append(domain_model)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            domain_models = executor.map(self._to_domain_model, db_models, timeout=30)
 
-        return domain_models
+        return list(domain_models)
