@@ -1,16 +1,16 @@
 'use client'
-import React from 'react'
 import Button from '@/app/components/base/button'
 import Modal from '@/app/components/base/modal'
 import { useDocLink } from '@/context/i18n'
-import Link from 'next/link'
-import { useTranslation } from 'react-i18next'
-import { RiExternalLinkLine } from '@remixicon/react'
-import { SparklesSoftAccent } from '../components/base/icons/src/public/common'
-import useTimestamp from '@/hooks/use-timestamp'
 import { useModalContextSelector } from '@/context/modal-context'
+import useTimestamp from '@/hooks/use-timestamp'
 import { useEducationVerify } from '@/service/use-education'
+import { RiExternalLinkLine } from '@remixicon/react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import React from 'react'
+import { useTranslation } from 'react-i18next'
+import { SparklesSoftAccent } from '../components/base/icons/src/public/common'
 
 export type ExpireNoticeModalPayloadProps = {
   expireAt: number
@@ -32,7 +32,7 @@ const ExpireNoticeModal: React.FC<Props> = ({ expireAt, expired, onClose }) => {
   const router = useRouter()
   const handleVerify = async () => {
     const { token } = await mutateAsync()
-    if(token)
+    if (token)
       router.push(`/education-apply?token=${token}`)
   }
   const handleConfirm = async () => {

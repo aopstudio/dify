@@ -1,25 +1,24 @@
+import { useAppContext } from '@/context/app-context'
+import { useModalContextSelector } from '@/context/modal-context'
+import { useProviderContext } from '@/context/provider-context'
+import { useEducationAutocomplete, useEducationVerify } from '@/service/use-education'
+import { useDebounceFn, useLocalStorageState } from 'ahooks'
+import dayjs from 'dayjs'
+import timezone from 'dayjs/plugin/timezone'
+import utc from 'dayjs/plugin/utc'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   useCallback,
   useEffect,
   useState,
 } from 'react'
-import { useDebounceFn, useLocalStorageState } from 'ahooks'
-import { useSearchParams } from 'next/navigation'
-import type { SearchParams } from './types'
 import {
   EDUCATION_PRICING_SHOW_ACTION,
   EDUCATION_RE_VERIFY_ACTION,
   EDUCATION_VERIFYING_LOCALSTORAGE_ITEM,
   EDUCATION_VERIFY_URL_SEARCHPARAMS_ACTION,
 } from './constants'
-import { useEducationAutocomplete, useEducationVerify } from '@/service/use-education'
-import { useModalContextSelector } from '@/context/modal-context'
-import dayjs from 'dayjs'
-import utc from 'dayjs/plugin/utc'
-import timezone from 'dayjs/plugin/timezone'
-import { useAppContext } from '@/context/app-context'
-import { useRouter } from 'next/navigation'
-import { useProviderContext } from '@/context/provider-context'
+import type { SearchParams } from './types'
 
 dayjs.extend(utc)
 dayjs.extend(timezone)
@@ -71,7 +70,7 @@ type useEducationReverifyNoticeParams = {
 }
 
 const isExpired = (expireAt?: number, timezone?: string) => {
-  if(!expireAt || !timezone)
+  if (!expireAt || !timezone)
     return false
   const today = dayjs().tz(timezone).startOf('day')
   const expiredDay = dayjs.unix(expireAt).tz(timezone).startOf('day')
@@ -96,31 +95,31 @@ const useEducationReverifyNotice = ({
   })
 
   useEffect(() => {
-    if(isLoading || !timezone)
+    if (isLoading || !timezone)
       return
-    if(allowRefreshEducationVerify) {
-        const expired = isExpired(educationAccountExpireAt!, timezone)
-        const isExpireAtChanged = prevExpireAt !== educationAccountExpireAt
-        if(isExpireAtChanged) {
-          setPrevExpireAt(educationAccountExpireAt!)
-          setReverifyHasNoticed(false)
-          setExpiredHasNoticed(false)
-        }
-        const shouldNotice = (() => {
-          if(isExpireAtChanged)
-            return true
-          return expired ? !expiredHasNoticed : !reverifyHasNoticed
-        })()
-        if(shouldNotice) {
-          onNotice({
-            expireAt: educationAccountExpireAt!,
-            expired,
-          })
-          if(expired)
-            setExpiredHasNoticed(true)
-          else
-            setReverifyHasNoticed(true)
-        }
+    if (allowRefreshEducationVerify) {
+      const expired = isExpired(educationAccountExpireAt!, timezone)
+      const isExpireAtChanged = prevExpireAt !== educationAccountExpireAt
+      if (isExpireAtChanged) {
+        setPrevExpireAt(educationAccountExpireAt!)
+        setReverifyHasNoticed(false)
+        setExpiredHasNoticed(false)
+      }
+      const shouldNotice = (() => {
+        if (isExpireAtChanged)
+          return true
+        return expired ? !expiredHasNoticed : !reverifyHasNoticed
+      })()
+      if (shouldNotice) {
+        onNotice({
+          expireAt: educationAccountExpireAt!,
+          expired,
+        })
+        if (expired)
+          setExpiredHasNoticed(true)
+        else
+          setReverifyHasNoticed(true)
+      }
     }
   }, [allowRefreshEducationVerify, timezone])
 
@@ -149,7 +148,7 @@ export const useEducationInit = () => {
   const { mutateAsync } = useEducationVerify()
   const handleVerify = async () => {
     const { token } = await mutateAsync()
-    if(token)
+    if (token)
       router.push(`/education-apply?token=${token}`)
   }
 
@@ -160,9 +159,9 @@ export const useEducationInit = () => {
       if (educationVerifyAction === EDUCATION_VERIFY_URL_SEARCHPARAMS_ACTION)
         localStorage.setItem(EDUCATION_VERIFYING_LOCALSTORAGE_ITEM, 'yes')
     }
-    if(educationVerifyAction === EDUCATION_PRICING_SHOW_ACTION)
+    if (educationVerifyAction === EDUCATION_PRICING_SHOW_ACTION)
       setShowPricingModal()
-    if(educationVerifyAction === EDUCATION_RE_VERIFY_ACTION)
+    if (educationVerifyAction === EDUCATION_RE_VERIFY_ACTION)
       handleVerify()
   }, [setShowAccountSettingModal, educationVerifying, educationVerifyAction])
 }
