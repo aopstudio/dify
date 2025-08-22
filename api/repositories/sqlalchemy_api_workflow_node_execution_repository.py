@@ -67,6 +67,7 @@ class DifyAPISQLAlchemyWorkflowNodeExecutionRepository(DifyAPIWorkflowNodeExecut
 
             The returned WorkflowNodeExecutionModel will have `offload_data` preloaded.
         """
+        stmt = select(WorkflowNodeExecutionModel)
         stmt = WorkflowNodeExecutionModel.preload_offload_data(stmt)
         stmt = (
             stmt.where(

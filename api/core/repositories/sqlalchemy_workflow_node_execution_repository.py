@@ -270,12 +270,14 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
         if values is None:
             return None
 
+        converter = WorkflowRuntimeTypeConverter()
+        json_encodable_value = converter.to_json_encodable(values)
         truncator = self._create_truncator()
-        truncated_values, truncated = truncator.truncate_inputs_outputs(values)
+        truncated_values, truncated = truncator.truncate_inputs_outputs(json_encodable_value)
         if not truncated:
             return None
 
-        value_json = self._json_encode(values)
+        value_json = json.dumps(json_encodable_value)
         assert value_json is not None, "value_json should be None here."
         upload_file = self._file_service.upload_file(
             filename=f"node_execution_{execution_id}{suffix}.json",
