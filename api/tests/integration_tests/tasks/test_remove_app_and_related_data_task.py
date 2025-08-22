@@ -259,6 +259,7 @@ class TestDeleteDraftVariablesWithOffloadIntegration:
 
         # Create WorkflowDraftVariableFile records
         from core.variables.types import SegmentType
+
         var_file1 = WorkflowDraftVariableFile(
             tenant_id=tenant.id,
             app_id=app.id,

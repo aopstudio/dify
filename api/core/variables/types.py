@@ -143,7 +143,7 @@ class SegmentType(StrEnum):
         # as `bool` is a subclass of `int` in Python's type hierarchy.
         elif self == SegmentType.BOOLEAN:
             return isinstance(value, bool)
-        elif self == SegmentType.NUMBER:
+        elif self in [SegmentType.INTEGER, SegmentType.FLOAT, SegmentType.NUMBER]:
             return isinstance(value, (int, float))
         elif self == SegmentType.STRING:
             return isinstance(value, str)
@@ -218,7 +218,6 @@ _ARRAY_TYPES = frozenset(
         SegmentType.ARRAY_ANY,
     ]
 )
-
 
 _NUMERICAL_TYPES = frozenset(
     [

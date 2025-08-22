@@ -1,7 +1,7 @@
 import uuid
 
 import pytest
-from sqlalchemy.orm import Session, selectinload, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from libs.datetime_utils import naive_utc_now
 from libs.uuid_utils import uuidv7

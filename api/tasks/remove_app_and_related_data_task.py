@@ -353,7 +353,7 @@ def _delete_draft_variables(app_id: str):
 def delete_draft_variables_batch(app_id: str, batch_size: int = 1000) -> int:
     """
     Delete draft variables for an app in batches.
-    
+
     This function now handles cleanup of associated Offload data including:
     - WorkflowDraftVariableFile records
     - UploadFile records
@@ -381,7 +381,7 @@ def delete_draft_variables_batch(app_id: str, batch_size: int = 1000) -> int:
                 LIMIT :batch_size
             """
             result = conn.execute(sa.text(query_sql), {"app_id": app_id, "batch_size": batch_size})
-            
+
             rows = list(result)
             if not rows:
                 break
@@ -403,44 +403,48 @@ def delete_draft_variables_batch(app_id: str, batch_size: int = 1000) -> int:
             batch_deleted = deleted_result.rowcount
             total_deleted += batch_deleted
 
-            logging.info(click.style(
-                f"Deleted {batch_deleted} draft variables (batch) for app {app_id}. "
-                f"Cleaned up {len(file_ids)} associated files.", 
-                fg="green"
-            ))
+            logging.info(
+                click.style(
+                    f"Deleted {batch_deleted} draft variables (batch) for app {app_id}. "
+                    f"Cleaned up {len(file_ids)} associated files.",
+                    fg="green",
+                )
+            )
 
-    logging.info(click.style(
-        f"Deleted {total_deleted} total draft variables for app {app_id}. "
-        f"Cleaned up {total_files_deleted} total associated files.", 
-        fg="green"
-    ))
+    logging.info(
+        click.style(
+            f"Deleted {total_deleted} total draft variables for app {app_id}. "
+            f"Cleaned up {total_files_deleted} total associated files.",
+            fg="green",
+        )
+    )
     return total_deleted
 
 
 def _delete_draft_variable_offload_data(conn, file_ids: list[str]) -> int:
     """
     Delete Offload data associated with WorkflowDraftVariable file_ids.
-    
+
     This function:
     1. Finds WorkflowDraftVariableFile records by file_ids
     2. Deletes associated files from object storage
     3. Deletes UploadFile records
     4. Deletes WorkflowDraftVariableFile records
-    
+
     Args:
         conn: Database connection
         file_ids: List of WorkflowDraftVariableFile IDs
-        
+
     Returns:
         Number of files cleaned up
     """
     from extensions.ext_storage import storage
-    
+
     if not file_ids:
         return 0
-        
+
     files_deleted = 0
-    
+
     try:
         # Get WorkflowDraftVariableFile records and their associated UploadFile keys
         query_sql = """
@@ -451,7 +455,7 @@ def _delete_draft_variable_offload_data(conn, file_ids: list[str]) -> int:
         """
         result = conn.execute(sa.text(query_sql), {"file_ids": tuple(file_ids)})
         file_records = list(result)
-        
+
         # Delete from object storage and collect upload file IDs
         upload_file_ids = []
         for variable_file_id, storage_key, upload_file_id in file_records:
@@ -463,7 +467,7 @@ def _delete_draft_variable_offload_data(conn, file_ids: list[str]) -> int:
                 logging.warning(f"Failed to delete storage object {storage_key}: {e}")
                 # Continue with database cleanup even if storage deletion fails
                 upload_file_ids.append(upload_file_id)
-        
+
         # Delete UploadFile records
         if upload_file_ids:
             delete_upload_files_sql = """
@@ -471,18 +475,18 @@ def _delete_draft_variable_offload_data(conn, file_ids: list[str]) -> int:
                 WHERE id IN :upload_file_ids
             """
             conn.execute(sa.text(delete_upload_files_sql), {"upload_file_ids": tuple(upload_file_ids)})
-        
+
         # Delete WorkflowDraftVariableFile records
         delete_variable_files_sql = """
             DELETE FROM workflow_draft_variable_files 
             WHERE id IN :file_ids
         """
         conn.execute(sa.text(delete_variable_files_sql), {"file_ids": tuple(file_ids)})
-        
+
     except Exception as e:
-        logging.error(f"Error deleting draft variable offload data: {e}")
+        logging.exception(f"Error deleting draft variable offload data: {e}")
         # Don't raise, as we want to continue with the main deletion process
-        
+
     return files_deleted
 
 

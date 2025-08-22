@@ -2,11 +2,11 @@
 SQLAlchemy implementation of the WorkflowNodeExecutionRepository.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional, Union
 
 from sqlalchemy import UnaryExpression, asc, desc, select
@@ -36,7 +36,7 @@ from models import (
 from models.model import UploadFile
 from models.workflow import WorkflowNodeExecutionOffload
 from services.file_service import FileService
-from services.variable_truncator import MaxDepthExceededError, VariableTruncator
+from services.variable_truncator import VariableTruncator
 
 logger = logging.getLogger(__name__)
 

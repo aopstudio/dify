@@ -5,13 +5,12 @@ import logging
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, ClassVar
 
 from sqlalchemy import Engine, orm, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.expression import and_, or_
-from sympy import false
 
 from configs import dify_config
 from core.app.entities.app_invoke_entities import InvokeFrom
@@ -20,12 +19,7 @@ from core.variables import Segment, StringSegment, Variable
 from core.variables.consts import SELECTORS_LENGTH
 from core.variables.segments import (
     ArrayFileSegment,
-    ArraySegment,
     FileSegment,
-    FloatSegment,
-    IntegerSegment,
-    NoneSegment,
-    ObjectSegment,
 )
 from core.variables.types import SegmentType
 from core.workflow.constants import CONVERSATION_VARIABLE_NODE_ID, ENVIRONMENT_VARIABLE_NODE_ID, SYSTEM_VARIABLE_NODE_ID

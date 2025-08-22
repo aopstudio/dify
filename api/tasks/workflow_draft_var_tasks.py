@@ -9,8 +9,8 @@ import logging
 
 from celery import shared_task  # type: ignore[import-untyped]
 from sqlalchemy.orm import Session
-from extensions.ext_database import db
 
+from extensions.ext_database import db
 
 _logger = logging.getLogger(__name__)
 

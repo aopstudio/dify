@@ -5,7 +5,6 @@ Tests the truncation and offloading logic for large inputs and outputs
 in the SQLAlchemyWorkflowNodeExecutionRepository.
 """
 
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -25,7 +24,7 @@ from core.workflow.entities.workflow_node_execution import (
 )
 from core.workflow.nodes.enums import NodeType
 from models import Account, CreatorUserRole, WorkflowNodeExecutionTriggeredFrom
-from models.workflow import WorkflowNodeExecutionModel, WorkflowNodeExecutionOffload
+from models.workflow import WorkflowNodeExecutionModel
 from services.variable_truncator import VariableTruncator
 
 

@@ -86,10 +86,10 @@ from .workflow import (
     WorkflowAppLog,
     WorkflowAppLogCreatedFrom,
     WorkflowNodeExecutionModel,
+    WorkflowNodeExecutionOffload,
     WorkflowNodeExecutionTriggeredFrom,
     WorkflowRun,
     WorkflowType,
-    WorkflowNodeExecutionOffload,
 )
 
 __all__ = [

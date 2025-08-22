@@ -451,7 +451,6 @@ class LLMGenerator:
         workflow = WorkflowService().get_draft_workflow(app_model=app)
         if not workflow:
             raise ValueError("Workflow not found for the given app model.")
-        workflow.graph_dict
         last_run = WorkflowService().get_node_last_run(app_model=app, workflow=workflow, node_id=node_id)
         try:
             node_type = last_run.node_type

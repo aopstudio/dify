@@ -1,14 +1,11 @@
 from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
-import sqlalchemy as sa
-from dataclasses import dataclass
-
 
 from tasks.remove_app_and_related_data_task import (
+    _delete_draft_variable_offload_data,
     _delete_draft_variables,
     delete_draft_variables_batch,
-    _delete_draft_variable_offload_data,
 )
 
 
