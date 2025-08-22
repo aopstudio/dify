@@ -37,8 +37,13 @@ export type NodeTracing = {
   node_type: BlockEnum
   title: string
   inputs: any
+  inputs_truncated: boolean
   process_data: any
   outputs?: Record<string, any>
+  outputs_truncated: boolean
+  outputs_full_content?: {
+    download_url: string
+  }
   status: string
   parallel_run_id?: string
   error?: string
@@ -378,6 +383,11 @@ export enum VarInInspectType {
   system = 'sys',
 }
 
+export type FullContent = {
+  size_bytes: number
+  download_url: string
+}
+
 export type VarInInspect = {
   id: string
   type: VarInInspectType
@@ -388,6 +398,8 @@ export type VarInInspect = {
   value: any
   edited: boolean
   visible: boolean
+  is_truncated: boolean
+  full_content: FullContent
 }
 
 export type NodeWithVar = {
