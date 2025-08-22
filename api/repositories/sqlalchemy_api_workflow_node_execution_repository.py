@@ -135,7 +135,8 @@ class DifyAPISQLAlchemyWorkflowNodeExecutionRepository(DifyAPIWorkflowNodeExecut
         Returns:
             The WorkflowNodeExecutionModel if found, or None if not found
         """
-        stmt = select(WorkflowNodeExecutionModel).where(WorkflowNodeExecutionModel.id == execution_id)
+        stmt = WorkflowNodeExecutionModel.preload_offload_data(select(WorkflowNodeExecutionModel))
+        stmt = stmt.where(WorkflowNodeExecutionModel.id == execution_id)
 
         # Add tenant filtering if provided
         if tenant_id is not None:
