@@ -260,6 +260,7 @@ class NodeStartStreamResponse(StreamResponse):
         index: int
         predecessor_node_id: Optional[str] = None
         inputs: Optional[Mapping[str, Any]] = None
+        inputs_truncated: bool = False
         created_at: int
         extras: dict = {}
         parallel_id: Optional[str] = None
@@ -317,8 +318,10 @@ class NodeFinishStreamResponse(StreamResponse):
         index: int
         predecessor_node_id: Optional[str] = None
         inputs: Optional[Mapping[str, Any]] = None
+        inputs_truncated: bool = False
         process_data: Optional[Mapping[str, Any]] = None
         outputs: Optional[Mapping[str, Any]] = None
+        outputs_truncated: bool = True
         status: str
         error: Optional[str] = None
         elapsed_time: float
@@ -386,8 +389,10 @@ class NodeRetryStreamResponse(StreamResponse):
         index: int
         predecessor_node_id: Optional[str] = None
         inputs: Optional[Mapping[str, Any]] = None
+        inputs_truncated: bool = False
         process_data: Optional[Mapping[str, Any]] = None
         outputs: Optional[Mapping[str, Any]] = None
+        outputs_truncated: bool = False
         status: str
         error: Optional[str] = None
         elapsed_time: float
