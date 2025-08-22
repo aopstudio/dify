@@ -11,6 +11,7 @@
   <a href="https://dify.ai/pricing">Dify edition overview</a>
 </p>
 
+
 <p align="center">
     <a href="https://dify.ai" target="_blank">
         <img alt="Static Badge" src="https://img.shields.io/badge/Product-F04438"></a>
