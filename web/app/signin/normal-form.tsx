@@ -35,8 +35,8 @@ const NormalForm = () => {
   const init = useCallback(async () => {
     try {
       if (consoleToken && refreshToken) {
-        localStorage.setItem('console_token', consoleToken)
-        localStorage.setItem('refresh_token', refreshToken)
+        // Tokens are handled by backend cookie setting through query params
+        // This case shouldn't happen with cookie-based auth
         router.replace('/apps')
         return
       }
