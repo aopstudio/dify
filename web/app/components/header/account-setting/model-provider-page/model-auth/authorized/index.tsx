@@ -29,7 +29,6 @@ import type {
 } from '../../declarations'
 import { useAuth } from '../hooks'
 import AuthorizedItem from './authorized-item'
-import Tooltip from '@/app/components/base/tooltip'
 
 type AuthorizedProps = {
   provider: ModelProvider,
@@ -116,25 +115,13 @@ const Authorized = ({
       <Button
         className='grow'
         size='small'
-        disabled={notAllowCustomCredential}
       >
         <RiEqualizer2Line className='mr-1 h-3.5 w-3.5' />
         {t('common.operation.config')}
       </Button>
     )
-
-    if (notAllowCustomCredential) {
-      return (
-        <Tooltip
-          asChild
-          popupContent={t('plugin.auth.credentialUnavailable')}
-        >
-          {Item}
-        </Tooltip>
-      )
-    }
     return Item
-  }, [notAllowCustomCredential, t])
+  }, [t])
 
   return (
     <>
