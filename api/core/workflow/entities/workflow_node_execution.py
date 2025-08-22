@@ -7,16 +7,13 @@ and don't contain implementation details like tenant_id, app_id, etc.
 """
 
 from collections.abc import Mapping
-import dataclasses
 from datetime import datetime
 from enum import StrEnum
-from tkinter import Variable
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
 from core.workflow.nodes.enums import NodeType
-from services.variable_truncator import VariableTruncator
 
 
 class WorkflowNodeExecutionMetadataKey(StrEnum):
@@ -130,6 +127,14 @@ class WorkflowNodeExecution(BaseModel):
         if inputs:
             return inputs
         return self.inputs
+
+    @property
+    def inputs_truncated(self):
+        return self._truncated_inputs is not None
+
+    @property
+    def outputs_truncated(self):
+        return self._truncated_outputs is not None
 
     def get_response_outputs(self) -> Mapping[str, Any] | None:
         outputs = self.get_truncated_outputs()
