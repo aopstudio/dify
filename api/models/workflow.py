@@ -818,6 +818,8 @@ class WorkflowNodeExecutionModel(Base):  # This model is expected to have `offlo
 
     @staticmethod
     def _load_full_content(session: orm.Session, file_id: str, storage: Storage):
+        from .model import UploadFile
+
         stmt = sa.select(UploadFile).where(UploadFile.id == file_id)
         file = session.scalars(stmt).first()
         assert file is not None, f"UploadFile with id {file_id} should exist but not"

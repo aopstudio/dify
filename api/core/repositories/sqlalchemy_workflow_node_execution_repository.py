@@ -245,6 +245,8 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
             if result is not None:
                 db_model.inputs = self._json_encode(result.truncated_value)
                 domain_model.set_truncated_inputs(result.truncated_value)
+                offload_data.inputs_file = result.file
+                offload_data.inputs_file_id = result.file.id
             else:
                 db_model.inputs = self._json_encode(domain_model.inputs)
 
@@ -257,6 +259,8 @@ class SQLAlchemyWorkflowNodeExecutionRepository(WorkflowNodeExecutionRepository)
             if result is not None:
                 db_model.outputs = self._json_encode(result.truncated_value)
                 domain_model.set_truncated_outputs(result.truncated_value)
+                offload_data.outputs_file = result.file
+                offload_data.outputs_file_id = result.file.id
             else:
                 db_model.outputs = self._json_encode(domain_model.outputs)
 
