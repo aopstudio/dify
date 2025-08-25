@@ -305,7 +305,7 @@ const Authorized = ({
             {
               !notAllowCustomCredential && (
                 <>
-                  <div className='h-px bg-divider-subtle'></div>
+                  <div className='h-[1px] bg-divider-subtle'></div>
                     <div className='p-2'>
                       <Authorize
                         pluginPayload={pluginPayload}

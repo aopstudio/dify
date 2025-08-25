@@ -74,7 +74,7 @@ const BaseField = ({
   })
   const memorizedOptions = useMemo(() => {
     return options?.filter((option) => {
-      if (!option.show_on?.length)
+      if (!option.show_on || option.show_on.length === 0)
         return true
 
       return option.show_on.every((condition) => {
