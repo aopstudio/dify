@@ -687,12 +687,18 @@ const DocumentList: FC<IDocumentListProps> = ({
                 </td>
                 <td>
                   <div className={'group mr-6 flex max-w-[460px] items-center hover:mr-0'}>
-                    <div className='shrink-0'>
-                      {doc?.data_source_type === DataSourceType.NOTION && <NotionIcon className='mr-1.5 mt-[-3px] inline-flex align-middle' type='page' src={doc.data_source_info.notion_page_icon} />}
-                      {doc?.data_source_type === DataSourceType.FILE && <FileTypeIcon type={extensionToFileType(doc?.data_source_info?.upload_file?.extension ?? fileType)} className='mr-1.5' />}
-                      {doc?.data_source_type === DataSourceType.WEB && <Globe01 className='mr-1.5 mt-[-3px] inline-flex align-middle' />}
-                    </div>
-                    <span className='grow-1 truncate text-sm'>{doc.name}</span>
+                    <Tooltip
+                      popupContent={doc.name}
+                    >
+                      <div className='flex grow items-center overflow-hidden'>
+                        <div className='shrink-0'>
+                          {doc?.data_source_type === DataSourceType.NOTION && <NotionIcon className='mr-1.5 mt-[-3px] inline-flex align-middle' type='page' src={doc.data_source_info.notion_page_icon} />}
+                          {doc?.data_source_type === DataSourceType.FILE && <FileTypeIcon type={extensionToFileType(doc?.data_source_info?.upload_file?.extension ?? fileType)} className='mr-1.5' />}
+                          {doc?.data_source_type === DataSourceType.WEB && <Globe01 className='mr-1.5 mt-[-3px] inline-flex align-middle' />}
+                        </div>
+                        <span className='truncate text-sm'>{doc.name}</span>
+                      </div>
+                    </Tooltip>
                     <div className='hidden shrink-0 group-hover:ml-auto group-hover:flex'>
                       <Tooltip
                         popupContent={t('datasetDocuments.list.table.rename')}
